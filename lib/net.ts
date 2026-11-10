@@ -2,7 +2,9 @@ import http from "node:http";
 import https from "node:https";
 import { lookup as dnsLookup } from "node:dns";
 import { BlockList, isIP } from "node:net";
-import type { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 /**
  * Outbound HTTP.
@@ -24,8 +26,10 @@ import type { Readable } from "node:stream";
  * request.
  *
  * Decoding: Node's raw response is inflated only when Content-Encoding says
- * gzip, br, or deflate. The worker fetch has already decoded the body, so
- * that path never inflates, even if the header is still present.
+ * gzip, br, or deflate. Inflation uses stream.pipeline, so an error on the
+ * socket or the decoder destroys both streams and comes back as a FetchError.
+ * The worker fetch has already decoded the body, so that path never inflates,
+ * even if the header is still present.
  */
 
 export class FetchError extends Error {
@@ -312,61 +316,64 @@ async function readPlain(
   return { bytes: concat(chunks), truncated: false };
 }
 
-/** Inflate a raw Node response. `signal` aborts a stalled decoder. */
+function isDecodeError(err: Error): boolean {
+  const code = (err as NodeJS.ErrnoException).code ?? "";
+  return code.startsWith("Z_") || code.includes("BROTLI");
+}
+
+function streamFailure(err: unknown, signal: AbortSignal): FetchError {
+  const error = err instanceof Error ? err : new Error("stream failed");
+  if (signal.aborted || error.name === "AbortError") {
+    return new FetchError("The request timed out.", "timeout");
+  }
+  if (isDecodeError(error)) return new FetchError("The response could not be decoded.", "network");
+  return new FetchError("The connection failed.", "network");
+}
+
+/** Inflate a raw Node response. Failures on either stream become a FetchError, and both streams are destroyed. */
 export async function inflateCapped(
   source: Readable,
   encoding: string,
   max: number,
   signal: AbortSignal
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  const zlib = await import("node:zlib");
   const decoder = encoding.includes("br")
-    ? zlib.createBrotliDecompress()
+    ? createBrotliDecompress()
     : encoding.includes("deflate")
-      ? zlib.createInflate()
-      : zlib.createGunzip();
-  source.pipe(decoder);
+      ? createInflate()
+      : createGunzip();
 
-  return await new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let settled = false;
-    const finish = (error?: Error, value?: { bytes: Uint8Array; truncated: boolean }) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      if (error) reject(error);
-      else resolve(value!);
-    };
-    const onAbort = () => {
-      source.destroy();
-      decoder.destroy();
-      finish(new FetchError("The request timed out.", "timeout"));
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort);
-    decoder.on("data", (chunk: Buffer) => {
-      if (settled) return;
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let hitCap = false;
+  const collector = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      if (hitCap) {
+        callback();
+        return;
+      }
       if (total + chunk.length > max) {
         const room = max - total;
         if (room > 0) chunks.push(chunk.subarray(0, room));
-        source.destroy();
-        decoder.destroy();
-        finish(undefined, { bytes: concat(chunks), truncated: true });
+        hitCap = true;
+        callback(new Error("byte cap"));
         return;
       }
       chunks.push(chunk);
       total += chunk.length;
-    });
-    decoder.on("end", () => finish(undefined, { bytes: concat(chunks), truncated: false }));
-    decoder.on("error", () => {
-      if (signal.aborted) finish(new FetchError("The request timed out.", "timeout"));
-      else finish(new FetchError("The response could not be decoded.", "network"));
-    });
+      callback();
+    },
   });
+
+  try {
+    await pipeline(source, decoder, collector, { signal });
+  } catch (err) {
+    if (!source.destroyed) source.destroy();
+    if (!decoder.destroyed) decoder.destroy();
+    if (hitCap) return { bytes: concat(chunks), truncated: true };
+    throw streamFailure(err, signal);
+  }
+  return { bytes: concat(chunks), truncated: false };
 }
 
 function readIncoming(
@@ -492,7 +499,10 @@ function nodeHop(
           : readIncoming(res, maxDecoded, signal);
         done.then(
           (body) => resolve({ status: res.statusCode ?? 0, headers, ...body }),
-          reject
+          (err) => {
+            if (!res.destroyed) res.destroy();
+            reject(err instanceof FetchError ? err : new FetchError("The connection failed.", "network"));
+          }
         );
       }
     );
@@ -525,7 +535,6 @@ async function stubHop(
     return { status: response.status, headers, bytes: new Uint8Array(), truncated: false };
   }
   if (/gzip|\bbr\b|deflate/.test(encoding)) {
-    const { Readable } = await import("node:stream");
     const reader = response.body.getReader();
     const source = new Readable({
       async read() {

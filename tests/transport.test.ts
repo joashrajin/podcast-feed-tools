@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { describe, it } from "node:test";
-import { FetchError, safeFetch, type FetchLike } from "../lib/net";
+import { FetchError, inflateCapped, safeFetch, type FetchLike } from "../lib/net";
 
 describe("safeFetch transport", () => {
   it("does not follow a redirect onto a private address", async () => {
@@ -138,6 +141,79 @@ describe("safeFetch transport", () => {
       (err: unknown) => err instanceof FetchError && err.code === "timeout"
     );
     assert.ok(Date.now() - started < 1000);
+  });
+
+  it("returns a fetch error for a truncated compressed response", async () => {
+    const partial = gzipSync(Buffer.from("<rss><channel></channel></rss>")).subarray(0, 20);
+    const source = Readable.from([partial]);
+    await assert.rejects(
+      () => inflateCapped(source, "gzip", 100_000, new AbortController().signal),
+      (err: unknown) => err instanceof FetchError && err.code === "network" && /decoded/i.test(err.message)
+    );
+    assert.equal(source.destroyed, true);
+
+    const fetchImpl: FetchLike = async () =>
+      new Response(partial, { status: 200, headers: { "content-encoding": "gzip" } });
+    await assert.rejects(
+      () => safeFetch("https://example.com/feed.xml", { userAgent: "test", fetchImpl, timeoutMs: 2000 }),
+      (err: unknown) => err instanceof FetchError && err.code === "network"
+    );
+  });
+
+  it("returns a fetch error when a compressed response disconnects", async () => {
+    const raw = gzipSync(Buffer.from("<rss><channel></channel></rss>"));
+    const source = new Readable({
+      read() {
+        this.push(raw.subarray(0, 12));
+        queueMicrotask(() => this.destroy(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })));
+      },
+    });
+    await assert.rejects(
+      () => inflateCapped(source, "gzip", 100_000, new AbortController().signal),
+      (err: unknown) => err instanceof FetchError && err.code === "network" && /connection/i.test(err.message)
+    );
+    assert.equal(source.destroyed, true);
+
+    let drop: () => void = () => undefined;
+    const reading = new Promise<void>((resolve) => {
+      drop = resolve;
+    });
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-encoding": "gzip" });
+      res.write(raw.subarray(0, 12));
+      void reading.then(() => res.destroy());
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    let incoming: http.IncomingMessage | undefined;
+    try {
+      const result = await new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("disconnect test timed out")), 1000);
+        const req = http.get({ hostname: "127.0.0.1", port, path: "/" }, (res) => {
+          incoming = res;
+          const pending = inflateCapped(res, "gzip", 100_000, new AbortController().signal);
+          drop();
+          pending.then(
+            (value) => {
+              clearTimeout(timer);
+              resolve(value);
+            },
+            (err: unknown) => {
+              clearTimeout(timer);
+              reject(err);
+            }
+          );
+        });
+        req.on("error", () => undefined);
+      });
+      assert.fail(`expected a fetch error, received ${JSON.stringify(result)}`);
+    } catch (err) {
+      assert.ok(err instanceof FetchError && err.code === "network", err instanceof Error ? err.message : "unknown");
+      assert.equal(incoming?.destroyed, true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("aborts decompression that stalls", async () => {
