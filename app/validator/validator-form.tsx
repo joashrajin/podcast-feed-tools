@@ -1,22 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { ValidationReport, CheckLevel } from "@/lib/validate";
+import type { CheckLevel, ValidationReport } from "@/lib/types";
 
-const levelStyles: Record<CheckLevel, string> = {
-  pass: "bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200",
-  warn: "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
-  fail: "bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200",
-  info: "bg-blue-50 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
+const levelLabel: Record<CheckLevel, string> = {
+  pass: "Pass",
+  warn: "Warn",
+  fail: "Fail",
+  info: "Note",
 };
 
-const levelIcons: Record<CheckLevel, string> = {
-  pass: "✓",
-  warn: "⚠",
-  fail: "✕",
-  info: "ℹ",
-};
+function tally(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
 
 export default function ValidatorForm() {
   const params = useSearchParams();
@@ -24,8 +21,11 @@ export default function ValidatorForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
+  const requestId = useRef(0);
+  const seen = useRef<string | null>(null);
 
-  async function run(feedUrl: string) {
+  const run = useCallback(async (feedUrl: string) => {
+    const current = ++requestId.current;
     setLoading(true);
     setError(null);
     setReport(null);
@@ -35,80 +35,98 @@ export default function ValidatorForm() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url: feedUrl }),
       });
-      const data = await res.json();
-      if (!res.ok) setError(data.error ?? "Something went wrong.");
-      else setReport(data);
+      const data = await res.json().catch(() => ({}));
+      if (current !== requestId.current) return;
+      if (!res.ok) setError(typeof data.error === "string" ? data.error : "Something went wrong.");
+      else setReport(data as ValidationReport);
     } catch {
-      setError("Network error — please try again.");
+      if (current !== requestId.current) return;
+      setError("Network error. Try again.");
     } finally {
-      setLoading(false);
+      if (current === requestId.current) setLoading(false);
     }
-  }
-
-  useEffect(() => {
-    const initial = params.get("url");
-    if (initial) run(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fails = report?.checks.filter((c) => c.level === "fail").length ?? 0;
-  const warns = report?.checks.filter((c) => c.level === "warn").length ?? 0;
+  const initialUrl = params.get("url");
+  useEffect(() => {
+    if (!initialUrl || seen.current === initialUrl) return;
+    seen.current = initialUrl;
+    setUrl(initialUrl);
+    void run(initialUrl);
+  }, [initialUrl, run]);
+
+  const fails = report?.checks.filter((check) => check.level === "fail").length ?? 0;
+  const warns = report?.checks.filter((check) => check.level === "warn").length ?? 0;
+  const summary =
+    fails === 0 && warns === 0
+      ? "No failures or warnings."
+      : `${tally(fails, "failure", "failures")}, ${tally(warns, "warning", "warnings")}.`;
 
   return (
-    <div>
+    <div className="form">
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          run(url);
+        action="#"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run(url);
         }}
-        className="flex gap-2"
+        aria-busy={loading}
       >
-        <input
-          type="url"
-          required
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com/feed.xml"
-          className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm shadow-sm outline-none focus:border-red-500 dark:border-zinc-700 dark:bg-zinc-900"
-        />
-        <button
-          type="submit"
-          disabled={loading}
-          className="rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-        >
-          {loading ? "Checking…" : "Validate"}
-        </button>
+        <label htmlFor="feed-url">Feed URL</label>
+        <div className="form-row">
+          <input
+            id="feed-url"
+            className="input"
+            type="text"
+            inputMode="url"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://example.com/feed.xml"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "validate-error" : "validate-hint"}
+          />
+          <button className="button" type="submit" disabled={loading}>
+            {loading ? "Checking" : "Check"}
+          </button>
+        </div>
+        <p id="validate-hint" className="hint">
+          Public http(s) feeds only. Private addresses are refused.
+        </p>
       </form>
 
+      {loading && (
+        <p className="status" role="status">
+          Fetching the feed…
+        </p>
+      )}
+
       {error && (
-        <p className="mt-4 rounded-lg bg-red-50 p-4 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
+        <p id="validate-error" className="notice" role="alert">
           {error}
         </p>
       )}
 
       {report && (
-        <div className="mt-6 text-left">
-          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <p className="font-semibold">
-              {report.podcastTitle ?? report.feedUrl}
+        <div aria-live="polite">
+          <div className="summary">
+            <h2>{report.podcastTitle ?? "Untitled feed"}</h2>
+            <p>
+              {tally(report.episodeCount, "episode", "episodes")}. {summary}
             </p>
-            <p className="mt-1 text-sm text-zinc-500">
-              {report.episodeCount} episodes ·{" "}
-              {fails === 0 && warns === 0
-                ? "no issues found 🎉"
-                : `${fails} error(s), ${warns} warning(s)`}
-            </p>
+            <p className="feed-url">{report.feedUrl}</p>
           </div>
-          <ul className="mt-4 space-y-2">
-            {report.checks.map((c) => (
-              <li
-                key={c.id}
-                className={`rounded-lg p-3 text-sm ${levelStyles[c.level]}`}
-              >
-                <span className="font-semibold">
-                  {levelIcons[c.level]} {c.title}
-                </span>
-                {c.detail && <p className="mt-1 opacity-80">{c.detail}</p>}
+          <ul className="checks">
+            {report.checks.map((check) => (
+              <li key={check.id} className={`check check-${check.level}`}>
+                <span className="check-level">{levelLabel[check.level]}</span>
+                <div>
+                  <h3>{check.title}</h3>
+                  {check.detail && <p>{check.detail}</p>}
+                </div>
               </li>
             ))}
           </ul>

@@ -1,21 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import { validateFeed, ValidateError } from "@/lib/validate";
+import { NextRequest } from "next/server";
+import { jsonNoStore, readSubmittedUrl } from "@/lib/api";
+import { ValidateError, validateFeed } from "@/lib/validate";
 
 export async function POST(req: NextRequest) {
-  const { url } = await req.json().catch(() => ({}));
-  if (typeof url !== "string" || !url.trim()) {
-    return NextResponse.json({ error: "Missing url" }, { status: 400 });
-  }
+  const url = await readSubmittedUrl(req);
+  if (typeof url !== "string") return url;
   try {
     const report = await validateFeed(url);
-    return NextResponse.json(report);
+    return jsonNoStore(report);
   } catch (err) {
-    if (err instanceof ValidateError) {
-      return NextResponse.json({ error: err.message }, { status: 422 });
-    }
-    return NextResponse.json(
-      { error: "Something went wrong validating that feed." },
-      { status: 500 }
-    );
+    if (err instanceof ValidateError) return jsonNoStore({ error: err.message }, 422);
+    return jsonNoStore({ error: "Something went wrong validating that feed." }, 500);
   }
 }

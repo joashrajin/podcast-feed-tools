@@ -1,84 +1,108 @@
 import { XMLParser } from "fast-xml-parser";
 import { USER_AGENT } from "./site";
+import type { Check, CheckLevel, ValidationReport } from "./types";
+import { FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
 
-export type CheckLevel = "pass" | "warn" | "fail" | "info";
-
-export type Check = {
-  id: string;
-  level: CheckLevel;
-  title: string;
-  detail: string;
-};
-
-export type ValidationReport = {
-  feedUrl: string;
-  podcastTitle?: string;
-  episodeCount: number;
-  checks: Check[];
-};
+export type { Check, CheckLevel, ValidationReport } from "./types";
 
 export class ValidateError extends Error {}
 
 type Episode = {
-  title?: string;
-  guid?: { "#text"?: string; "@_isPermaLink"?: string } | string;
-  enclosure?: { "@_url"?: string; "@_type"?: string; "@_length"?: string };
-  pubDate?: string;
-  "itunes:duration"?: string | number;
+  title?: unknown;
+  guid?: unknown;
+  enclosure?:
+    | { "@_url"?: string; "@_type"?: string; "@_length"?: string }
+    | { "@_url"?: string; "@_type"?: string; "@_length"?: string }[];
+  pubDate?: unknown;
 };
 
-function asArray<T>(v: T | T[] | undefined): T[] {
-  if (v === undefined) return [];
-  return Array.isArray(v) ? v : [v];
+function asArray<T>(value: T | T[] | undefined): T[] {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
-export async function validateFeed(feedUrl: string): Promise<ValidationReport> {
-  let url: URL;
-  try {
-    url = new URL(feedUrl.trim());
-  } catch {
-    throw new ValidateError("That doesn't look like a valid URL.");
+function textOf(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
   }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new ValidateError("Feed URL must be http(s).");
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (value && typeof value === "object" && "#text" in value) {
+    return textOf((value as { "#text"?: unknown })["#text"]);
   }
+  return undefined;
+}
 
+function headerValue(headers: Record<string, string | string[] | undefined>, name: string): string {
+  const value = headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
+
+function failure(err: unknown): ValidateError {
+  if (err instanceof ValidateError) return err;
+  if (err instanceof FetchError) {
+    if (err.code === "blocked" || err.code === "invalid-url") {
+      return new ValidateError("That address isn't a public http(s) URL. Local and private addresses are refused.");
+    }
+    if (err.code === "too-large") {
+      return new ValidateError("The feed is too large to check (limit is 12 MB uncompressed).");
+    }
+    if (err.code === "too-many-redirects") {
+      return new ValidateError("The feed redirected too many times.");
+    }
+    return new ValidateError("Couldn't reach the feed URL (timeout or network error).");
+  }
+  return new ValidateError("Couldn't reach the feed URL (timeout or network error).");
+}
+
+export async function validateFeed(
+  feedUrl: string,
+  fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch
+): Promise<ValidationReport> {
   const checks: Check[] = [];
   const push = (id: string, level: CheckLevel, title: string, detail: string) =>
     checks.push({ id, level, title, detail });
 
-  let res: Response;
+  let response;
   try {
-    res = await fetch(url, {
-      headers: { "user-agent": USER_AGENT },
-      redirect: "follow",
-      signal: AbortSignal.timeout(15000),
+    response = await fetchImpl(feedUrl, {
+      userAgent: USER_AGENT,
+      accept: "application/rss+xml, application/xml, text/xml, */*",
+      timeoutMs: 12_000,
+      maxBytes: 4_000_000,
+      maxUncompressedBytes: 12_000_000,
     });
+  } catch (err) {
+    throw failure(err);
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new ValidateError(
+      `Feed returned HTTP ${response.status}. Directories and apps can't ingest a feed that doesn't return 200.`
+    );
+  }
+  push("http", "pass", "Feed is reachable", `HTTP ${response.status} from ${response.url}`);
+
+  let finalUrl: URL;
+  try {
+    finalUrl = new URL(response.url);
   } catch {
-    throw new ValidateError(
-      "Couldn't reach the feed URL (timeout or network error). Pocket Casts' crawler would fail here too."
-    );
+    throw new ValidateError("The feed redirected to an address that isn't a valid URL.");
   }
 
-  if (!res.ok) {
-    throw new ValidateError(
-      `Feed returned HTTP ${res.status}. Directories and apps can't ingest a feed that doesn't return 200.`
-    );
-  }
-  push("http", "pass", "Feed is reachable", `HTTP ${res.status} from ${res.url}`);
-
-  if (url.protocol === "http:" && res.url.startsWith("http:")) {
+  if (finalUrl.protocol === "https:") {
+    push("https", "pass", "Feed is served over HTTPS", response.url);
+  } else {
     push(
       "https",
       "warn",
       "Feed is served over plain HTTP",
-      "Serve your feed over HTTPS. Some platforms and mobile OSes block or downgrade insecure content."
+      "Serve the feed over HTTPS. Some platforms and mobile systems block or downgrade insecure content."
     );
-  } else {
-    push("https", "pass", "Feed is served over HTTPS", res.url);
   }
 
-  const contentType = res.headers.get("content-type") ?? "";
+  const contentType = headerValue(response.headers, "content-type");
   if (/xml|rss/i.test(contentType)) {
     push("content-type", "pass", "Content-Type looks right", contentType);
   } else {
@@ -86,21 +110,26 @@ export async function validateFeed(feedUrl: string): Promise<ValidationReport> {
       "content-type",
       "warn",
       "Unexpected Content-Type",
-      `Got "${contentType || "none"}" — feeds should be served as application/rss+xml or text/xml.`
+      `Got "${contentType || "none"}". Feeds should be served as application/rss+xml or text/xml.`
     );
   }
 
-  const xml = await res.text();
+  const xml = response.body;
+  if (/<!doctype/i.test(xml.slice(0, 4000))) {
+    throw new ValidateError("The feed includes a DOCTYPE declaration. Podcast RSS should be a plain document without one.");
+  }
+
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
+    processEntities: true,
   });
   let doc: Record<string, unknown>;
   try {
     doc = parser.parse(xml);
   } catch {
     throw new ValidateError(
-      "The feed isn't valid XML. Run it through an XML linter — a stray unescaped & or unclosed tag is the usual culprit."
+      "The feed isn't valid XML. A stray unescaped & or an unclosed tag is the usual cause."
     );
   }
 
@@ -108,99 +137,101 @@ export async function validateFeed(feedUrl: string): Promise<ValidationReport> {
   const channel = rss?.channel as Record<string, unknown> | undefined;
   if (!channel) {
     throw new ValidateError(
-      "No <rss><channel> found. Podcast feeds must be RSS 2.0 (Atom is not supported by most podcast apps)."
+      "No <rss><channel> found. Podcast feeds have to be RSS 2.0. Most apps do not ingest Atom."
     );
   }
   push("rss", "pass", "Valid RSS 2.0 structure", "<rss><channel> found");
 
-  // Channel-level checks
-  const title = channel.title as string | undefined;
-  if (title) push("title", "pass", "Channel has a title", String(title));
+  const title = textOf(channel.title);
+  if (title) push("title", "pass", "Channel has a title", title);
   else push("title", "fail", "Missing <title>", "Apps will show a blank show name.");
 
-  const description =
-    (channel.description as string) ?? (channel["itunes:summary"] as string);
-  if (description)
-    push("description", "pass", "Channel has a description", `${String(description).slice(0, 120)}…`);
-  else
+  const description = textOf(channel.description) ?? textOf(channel["itunes:summary"]);
+  if (description) {
+    const preview = description.length > 120 ? `${description.slice(0, 120)}…` : description;
+    push("description", "pass", "Channel has a description", preview);
+  } else {
     push(
       "description",
       "fail",
       "Missing <description>",
-      "Required by Apple and shown on your Pocket Casts show page."
+      "Required by Apple and shown on directory pages."
     );
+  }
 
-  if (channel.language)
-    push("language", "pass", "Language is set", String(channel.language));
-  else
+  const language = textOf(channel.language);
+  if (language) push("language", "pass", "Language is set", language);
+  else {
     push(
       "language",
       "warn",
       "Missing <language>",
-      "Set an ISO 639 code like en or en-us. Directories use it for regional discovery."
+      "Set an ISO 639 code such as en or en-us. Directories use it for regional discovery."
     );
+  }
 
-  const img = channel["itunes:image"] as { "@_href"?: string } | undefined;
-  const imgHref = img?.["@_href"];
-  if (imgHref) {
-    const secure = imgHref.startsWith("https://");
+  const image = channel["itunes:image"] as { "@_href"?: string } | undefined;
+  const imageHref = image?.["@_href"];
+  if (imageHref) {
+    const secure = imageHref.startsWith("https://");
     push(
       "artwork",
       secure ? "pass" : "warn",
       secure ? "Artwork URL present (HTTPS)" : "Artwork URL is not HTTPS",
-      `${imgHref} — make sure it's a square JPG/PNG between 1400×1400 and 3000×3000.`
+      `${imageHref} — square JPG or PNG, between 1400×1400 and 3000×3000.`
     );
   } else {
     push(
       "artwork",
       "fail",
       "Missing <itunes:image>",
-      "Pocket Casts and Apple require show artwork (square, 1400–3000px)."
+      "Apple and most apps require show artwork (square, 1400–3000px)."
     );
   }
 
-  if (channel["itunes:category"])
-    push("category", "pass", "iTunes category set", "");
-  else
+  if (channel["itunes:category"]) push("category", "pass", "iTunes category set", "A category element is present.");
+  else {
     push(
       "category",
       "warn",
       "Missing <itunes:category>",
-      "Without a category your show won't appear in directory browse sections."
+      "Without a category the show is left out of directory browse sections."
     );
+  }
 
-  if (channel["itunes:explicit"] !== undefined)
-    push("explicit", "pass", "Explicit flag set", String(channel["itunes:explicit"]));
-  else
+  const explicit = textOf(channel["itunes:explicit"]);
+  if (explicit) push("explicit", "pass", "Explicit flag set", explicit);
+  else {
     push(
       "explicit",
       "warn",
       "Missing <itunes:explicit>",
       "Apple requires an explicit rating on every feed."
     );
+  }
 
-  if (channel["podcast:guid"])
+  if (channel["podcast:guid"]) {
     push(
       "podcast-guid",
       "pass",
       "Has <podcast:guid>",
-      "Podcasting 2.0 GUID present — good for cross-directory identity."
+      "Podcasting 2.0 GUID present. Useful as a stable identity across directories."
     );
-  else
+  } else {
     push(
       "podcast-guid",
       "info",
       "No <podcast:guid>",
-      "Optional, but a Podcasting 2.0 GUID gives your show a stable identity across apps and hosts."
+      "Optional. A Podcasting 2.0 GUID gives the show a stable identity across apps and hosts."
     );
+  }
 
-  // Episode-level checks
   const items = asArray(channel.item as Episode | Episode[] | undefined);
   if (items.length === 0) {
     push("episodes", "fail", "No episodes found", "The feed has no <item> entries.");
-    return { feedUrl: res.url, podcastTitle: title, episodeCount: 0, checks };
+    return { feedUrl: response.url, podcastTitle: title, episodeCount: 0, checks };
   }
-  push("episodes", "pass", `${items.length} episode(s) found`, "");
+  push("episodes", "pass", `${items.length} episode(s) found`, "The channel has item entries.");
 
   const guids = new Map<string, number>();
   let missingEnclosure = 0;
@@ -209,61 +240,73 @@ export async function validateFeed(feedUrl: string): Promise<ValidationReport> {
   let badDate = 0;
 
   for (const item of items) {
-    const enc = item.enclosure?.["@_url"];
+    const enclosure = Array.isArray(item.enclosure) ? item.enclosure[0] : item.enclosure;
+    const enc = enclosure?.["@_url"];
     if (!enc) missingEnclosure++;
     else if (enc.startsWith("http://")) insecureEnclosure++;
 
-    const guid =
-      typeof item.guid === "string" ? item.guid : item.guid?.["#text"];
+    const guid = textOf(item.guid);
     if (!guid) missingGuid++;
     else guids.set(guid, (guids.get(guid) ?? 0) + 1);
 
-    if (item.pubDate && isNaN(Date.parse(item.pubDate))) badDate++;
+    const pubDate = textOf(item.pubDate);
+    if (pubDate && Number.isNaN(Date.parse(pubDate))) badDate++;
   }
 
-  if (missingEnclosure)
+  if (missingEnclosure) {
     push(
       "enclosures",
       "fail",
       `${missingEnclosure} episode(s) missing <enclosure>`,
-      "Episodes without an enclosure have no audio and won't play anywhere."
+      "Episodes without an enclosure have no audio and will not play."
     );
-  else push("enclosures", "pass", "Every episode has an audio enclosure", "");
+  } else {
+    push("enclosures", "pass", "Every episode has an audio enclosure", "Each item has an enclosure URL.");
+  }
 
-  if (insecureEnclosure)
+  if (insecureEnclosure) {
     push(
       "enclosure-https",
       "warn",
       `${insecureEnclosure} enclosure(s) served over HTTP`,
-      "Move audio to HTTPS — some clients refuse mixed content."
+      "Move audio to HTTPS. Some clients refuse insecure media."
     );
+  }
 
-  const dupes = [...guids.entries()].filter(([, n]) => n > 1);
-  if (missingGuid)
+  const dupes = [...guids.entries()].filter(([, count]) => count > 1);
+  if (missingGuid) {
     push(
       "guids",
       "fail",
       `${missingGuid} episode(s) missing <guid>`,
-      "Apps use GUIDs to track played state; missing GUIDs cause duplicate or re-downloaded episodes."
+      "Apps use GUIDs to track played state. Missing GUIDs cause duplicate or re-downloaded episodes."
     );
-  else if (dupes.length)
+  } else if (dupes.length) {
     push(
       "guids",
       "fail",
       `${dupes.length} duplicate GUID(s)`,
-      `e.g. "${dupes[0][0]}" appears ${dupes[0][1]} times. Duplicate GUIDs make apps hide or merge episodes.`
+      `"${dupes[0][0]}" appears ${dupes[0][1]} times. Duplicate GUIDs make apps hide or merge episodes.`
     );
-  else
-    push("guids", "pass", "GUIDs present and unique on every episode", "");
+  } else {
+    push("guids", "pass", "GUIDs present and unique on every episode", "No missing or repeated GUIDs.");
+  }
 
-  if (badDate)
+  if (badDate) {
     push(
       "dates",
       "warn",
       `${badDate} episode(s) with unparseable <pubDate>`,
-      "Use RFC 822 dates, e.g. Tue, 08 Jul 2026 09:00:00 GMT. Bad dates break episode ordering."
+      "Use RFC 822 dates, for example Tue, 08 Jul 2026 09:00:00 GMT. Bad dates break episode ordering."
     );
-  else push("dates", "pass", "All publish dates parse correctly", "");
+  } else {
+    push("dates", "pass", "All publish dates parse correctly", "Every pubDate that is present parses as a date.");
+  }
 
-  return { feedUrl: res.url, podcastTitle: title, episodeCount: items.length, checks };
+  return {
+    feedUrl: response.url,
+    podcastTitle: title,
+    episodeCount: items.length,
+    checks,
+  };
 }

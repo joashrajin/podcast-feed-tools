@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Feed Tools
 
-## Getting Started
+A small desk for podcast RSS. Paste a Pocket Casts, Apple Podcasts, or Spotify link and get the show's public feed. A second page checks a feed for the problems that stop it updating.
 
-First, run the development server:
+## Local setup
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). The validator is at `/validator`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm test
+npm run lint
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Tests cover link detection, directory matching, and the address checks. They do not call Apple, Spotify, or Pocket Casts.
 
-## Learn More
+### Environment
 
-To learn more about Next.js, take a look at the following resources:
+| Variable | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_SITE_NAME` | Name in the header, titles, and the User-Agent. Defaults to `Feed Tools`. |
+| `NEXT_PUBLIC_SITE_URL` | Public origin, with no path. Used for metadata, `robots.txt`, the sitemap, and the User-Agent. Defaults to `http://localhost:3000`. Set this in production. |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## How a link becomes a feed
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Pocket Casts.** `pca.st` redirects to a show id. The catalog's `url` is the RSS feed for some shows and the website for others, so it is kept only when the response is RSS. Otherwise the title and author are matched to Apple Podcasts. A private show is refused.
+- **Apple Podcasts.** The `id` in a show or episode link is the show. `https://itunes.apple.com/lookup?id=` returns `feedUrl`. No title guessing.
+- **Spotify.** Spotify does not publish RSS. A show page's `og:title` (or, for an episode, the embed's show name) is matched to the Apple Podcasts search API. One exact title is accepted. Several matches are listed and refused. No match is reported as unresolved, which is what happens for Spotify-only shows.
 
-## Deploy on Vercel
+Title matching uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The validator fetches a public `http` or `https` feed. Loopback, link-local, private, and non-canonical addresses are refused, including after redirects. Responses are size-capped.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deploying on Spacefast
+
+This app is hosted on Spacefast. It is a Next.js server app: `/api/resolve` and `/api/validate` have to run on a server, so it should not be published as a static export.
+
+Spacefast's CLI documents automatic builds for stable Next.js 16.2 and 16.3. This repo stays on the 16.2 line for that reason. From the project root, `sf publish` or `npx spacefast publish` is the documented way to have Spacefast detect the Next.js app, build it, and publish the server bundle (OpenNext, for apps that are not a static export). `.spacefast/` and `.open-next/` are local state and build output. Both are gitignored.
+
+Set `NEXT_PUBLIC_SITE_URL` to the public `https` origin before building. Titles, the sitemap, `robots.txt`, and the User-Agent sent to other sites all use it.
+
+This repository has no committed Spacefast config and does not name a team or space. Attach those in the Spacefast dashboard, or with `sf`, if they are not already linked. The commands above are taken from Spacefast's public CLI documentation. This checkout was not published from here, so confirm the current command if a publish behaves differently. There is no Vercel project config. A `.vercel` entry remains in `.gitignore` only so an old local folder is not committed.

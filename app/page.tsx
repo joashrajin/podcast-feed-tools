@@ -3,20 +3,24 @@ import ResolverForm from "./resolver-form";
 
 const faqs = [
   {
-    q: "How do I get the RSS feed from a Pocket Casts link?",
-    a: "Paste any Pocket Casts share link (like pca.st/abc123) into the box above. We resolve the show behind the link and return its original RSS feed URL, which you can use in any podcast app or tool.",
+    q: "Which links work?",
+    a: "Pocket Casts share links (pca.st and pocketcasts.com), Apple Podcasts show and episode links, and Spotify show and episode links on open.spotify.com. An Apple episode link still carries the show id. A Spotify episode link is read back to the show.",
   },
   {
-    q: "Why doesn't Pocket Casts show the RSS feed directly?",
-    a: "Like most podcast apps, Pocket Casts uses share links that point to its own catalog pages rather than the underlying feed. This tool cross-references the show against the Pocket Casts catalog and the Apple Podcasts directory to recover the original feed.",
+    q: "Why would a Spotify link fail?",
+    a: "Spotify does not publish RSS. The show name is matched against Apple Podcasts. A Spotify-only show, or a show whose title differs there, cannot be resolved. Paste the Apple Podcasts link if you have it.",
   },
   {
-    q: "Does this work for private or paid podcasts?",
-    a: "No — private feeds and paid subscriber feeds aren't listed in public directories, so they can't be recovered. Only publicly listed shows resolve.",
+    q: "Can two shows with the same name get mixed up?",
+    a: "An exact title is required. If several shows share it, the publisher has to match as well. When it is still ambiguous, the tool stops and names the candidates instead of guessing.",
   },
   {
-    q: "I'm a podcast creator — can I check my feed for problems?",
-    a: "Yes! Use the Feed Validator to check your feed for missing tags, broken enclosures, duplicate GUIDs, artwork issues, and other problems that stop your show from appearing (or updating) in Pocket Casts.",
+    q: "What about private or paid feeds?",
+    a: "They are refused. Pocket Casts marks private shows in its catalog, and unlisted feeds are not in Apple's directory.",
+  },
+  {
+    q: "Can I check a feed I already have?",
+    a: "Yes. The validator reads a public RSS URL and reports missing tags, enclosures, GUID problems, and dates that do not parse.",
   },
 ];
 
@@ -24,53 +28,58 @@ export default function Home() {
   const faqJsonLd = {
     "@context": "https://schema.org",
     "@type": "FAQPage",
-    mainEntity: faqs.map((f) => ({
+    mainEntity: faqs.map((faq) => ({
       "@type": "Question",
-      name: f.q,
-      acceptedAnswer: { "@type": "Answer", text: f.a },
+      name: faq.q,
+      acceptedAnswer: { "@type": "Answer", text: faq.a },
     })),
   };
 
   return (
     <>
-      <section className="text-center">
-        <h1 className="text-4xl font-bold tracking-tight">
-          Get the RSS feed from any Pocket Casts link
-        </h1>
-        <p className="mx-auto mt-4 max-w-xl text-zinc-600 dark:text-zinc-400">
-          Paste a <code>pca.st</code> share link and {SITE_NAME} will dig up
-          the show&apos;s original RSS feed — free, instant, no signup.
-        </p>
-        <div className="mt-8">
-          <ResolverForm />
-        </div>
-      </section>
+      <h1>The feed behind a show link</h1>
+      <p className="lede">
+        Pocket Casts, Apple Podcasts, and Spotify links point at a catalog page.
+        {" "}{SITE_NAME} returns the RSS feed when the show is listed publicly.
+      </p>
+      <ResolverForm />
 
-      <section className="mt-20">
-        <h2 className="text-2xl font-bold">How it works</h2>
-        <ol className="mt-4 list-decimal space-y-2 pl-5 text-zinc-700 dark:text-zinc-300">
+      <section className="section">
+        <h2>How each link is resolved</h2>
+        <ol className="steps">
           <li>
-            You paste a Pocket Casts share link — from the app, tap Share on
-            any show or episode.
+            <strong>Pocket Casts</strong>
+            <p>
+              The link carries a show id. The catalog&apos;s address is kept only when
+              the response is actually RSS. Some shows store a website there instead.
+              Those fall back to an exact title match in Apple Podcasts.
+            </p>
           </li>
           <li>
-            {SITE_NAME} resolves the show behind the link using the Pocket
-            Casts catalog and the Apple Podcasts directory.
+            <strong>Apple Podcasts</strong>
+            <p>
+              The number after <code>id</code> in the link is the show. Apple&apos;s
+              lookup API returns <code>feedUrl</code> directly. No title guessing.
+            </p>
           </li>
           <li>
-            You get the original RSS feed URL, ready to use in any app,
-            aggregator, or script.
+            <strong>Spotify</strong>
+            <p>
+              Spotify has no feed to give. The show name comes from the page, or from
+              the episode embed, and is matched to Apple Podcasts. One exact title is
+              accepted. Several, or none, are reported. Exclusives stop here.
+            </p>
           </li>
         </ol>
       </section>
 
-      <section className="mt-16">
-        <h2 className="text-2xl font-bold">Frequently asked questions</h2>
-        <dl className="mt-6 space-y-6">
-          {faqs.map((f) => (
-            <div key={f.q}>
-              <dt className="font-semibold">{f.q}</dt>
-              <dd className="mt-1 text-zinc-600 dark:text-zinc-400">{f.a}</dd>
+      <section className="section">
+        <h2>Questions</h2>
+        <dl className="faq">
+          {faqs.map((faq) => (
+            <div key={faq.q}>
+              <dt>{faq.q}</dt>
+              <dd>{faq.a}</dd>
             </div>
           ))}
         </dl>
@@ -78,7 +87,9 @@ export default function Home() {
 
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(faqJsonLd).replace(/</g, "\\u003c"),
+        }}
       />
     </>
   );
