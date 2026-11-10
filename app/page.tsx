@@ -1,65 +1,85 @@
-import Image from "next/image";
+import { SITE_NAME } from "@/lib/site";
+import ResolverForm from "./resolver-form";
+
+const faqs = [
+  {
+    q: "How do I get the RSS feed from a Pocket Casts link?",
+    a: "Paste any Pocket Casts share link (like pca.st/abc123) into the box above. We resolve the show behind the link and return its original RSS feed URL, which you can use in any podcast app or tool.",
+  },
+  {
+    q: "Why doesn't Pocket Casts show the RSS feed directly?",
+    a: "Like most podcast apps, Pocket Casts uses share links that point to its own catalog pages rather than the underlying feed. This tool cross-references the show against the Pocket Casts catalog and the Apple Podcasts directory to recover the original feed.",
+  },
+  {
+    q: "Does this work for private or paid podcasts?",
+    a: "No — private feeds and paid subscriber feeds aren't listed in public directories, so they can't be recovered. Only publicly listed shows resolve.",
+  },
+  {
+    q: "I'm a podcast creator — can I check my feed for problems?",
+    a: "Yes! Use the Feed Validator to check your feed for missing tags, broken enclosures, duplicate GUIDs, artwork issues, and other problems that stop your show from appearing (or updating) in Pocket Casts.",
+  },
+];
 
 export default function Home() {
+  const faqJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((f) => ({
+      "@type": "Question",
+      name: f.q,
+      acceptedAnswer: { "@type": "Answer", text: f.a },
+    })),
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <>
+      <section className="text-center">
+        <h1 className="text-4xl font-bold tracking-tight">
+          Get the RSS feed from any Pocket Casts link
+        </h1>
+        <p className="mx-auto mt-4 max-w-xl text-zinc-600 dark:text-zinc-400">
+          Paste a <code>pca.st</code> share link and {SITE_NAME} will dig up
+          the show&apos;s original RSS feed — free, instant, no signup.
+        </p>
+        <div className="mt-8">
+          <ResolverForm />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </section>
+
+      <section className="mt-20">
+        <h2 className="text-2xl font-bold">How it works</h2>
+        <ol className="mt-4 list-decimal space-y-2 pl-5 text-zinc-700 dark:text-zinc-300">
+          <li>
+            You paste a Pocket Casts share link — from the app, tap Share on
+            any show or episode.
+          </li>
+          <li>
+            {SITE_NAME} resolves the show behind the link using the Pocket
+            Casts catalog and the Apple Podcasts directory.
+          </li>
+          <li>
+            You get the original RSS feed URL, ready to use in any app,
+            aggregator, or script.
+          </li>
+        </ol>
+      </section>
+
+      <section className="mt-16">
+        <h2 className="text-2xl font-bold">Frequently asked questions</h2>
+        <dl className="mt-6 space-y-6">
+          {faqs.map((f) => (
+            <div key={f.q}>
+              <dt className="font-semibold">{f.q}</dt>
+              <dd className="mt-1 text-zinc-600 dark:text-zinc-400">{f.a}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+      />
+    </>
   );
 }
