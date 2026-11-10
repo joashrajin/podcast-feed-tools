@@ -23,11 +23,15 @@ export default function SearchForm() {
         body: JSON.stringify({ query }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "Something went wrong.");
+      if (!res.ok || !Array.isArray(data.shows)) {
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "Pocket Casts search returned something that couldn't be read."
+        );
         return;
       }
-      setShows(Array.isArray(data.shows) ? data.shows : []);
+      setShows(data.shows);
       if (typeof data.submitUrl === "string") setSubmitUrl(data.submitUrl);
     } catch {
       setError("Network error. Try again.");

@@ -46,15 +46,17 @@ Title matching uses the US Apple Podcasts directory and does not require an API 
 
 ## Fetching
 
-Server-side fetches use the standard `fetch()` API, which is what [Spacefast Functions](https://spacefast.com/docs/functions/) documents for outbound HTTP. They do not use `node:dns` or `node:http`. Literal private, loopback, and link-local addresses are refused before the request, including on each redirect. Decoded bodies are capped while they are read, including gzip and brotli inflation. The rate limit uses `CF-Connecting-IP` when that header is present and ignores `X-Forwarded-For`.
+Server-side fetches on Node open the socket with `http.request` / `https.request` and a connect-time DNS lookup. That lookup is the only resolution: a DNS error fails closed, a private answer fails closed, and the connection uses those addresses. Literal private addresses are refused before that, including on every redirect. Decoded bodies are capped while they are read. Gzip, brotli, and deflate are inflated only when the raw response's `Content-Encoding` says so.
 
-On a claimed Spacefast space, worker `fetch()` can reach any public HTTP(S) host. An unclaimed space can only reach a short trusted list, which does not include Apple, Spotify, or Pocket Casts, so this app needs a claimed space. `sf dev` does not run Functions. This checkout was not published, so the worker path was not executed on Spacefast. The same `fetch()` path is what `npm test` and `npm start` exercise.
+Spacefast Functions do not honor a custom lookup. Their [outbound `fetch()`](https://spacefast.com/docs/functions/) is limited to public HTTP(S) hosts on a claimed space, and the worker refuses private networks. This app uses that `fetch()` only when the isolate is a Cloudflare worker (`Cloudflare-Workers` or `WebSocketPair`). On that path, rebinding protection is the platform's. Any other runtime that cannot pin a connection refuses the request. An unclaimed space can only reach a short trusted list, which does not include Apple, Spotify, or Pocket Casts, so this app needs a claimed space. `sf dev` does not run Functions, and this checkout was not published, so the worker path was not executed on Spacefast.
+
+The rate limit uses `CF-Connecting-IP` when that header is present and ignores `X-Forwarded-For`.
 
 ## Deploying on Spacefast
 
 This app is hosted on Spacefast. It is a Next.js server app: the `/api/search`, `/api/resolve`, and `/api/validate` routes have to run on a server, so it should not be published as a static export.
 
-Spacefast's CLI documents automatic builds for stable Next.js 16.2 and 16.3. This repo stays on 16.2.12, the newest 16.2 release, for that reason. From the project root, `sf publish` or `npx spacefast publish` is the documented way to have Spacefast detect the app and build it (OpenNext for a server build). `.spacefast/` and `.open-next/` are gitignored.
+Spacefast's CLI documents automatic builds for stable Next.js 16.2 and 16.3. This repo is on 16.3.8. From the project root, `sf publish` or `npx spacefast publish` is the documented way to have Spacefast detect the app and build it (OpenNext for a server build). `.spacefast/` and `.open-next/` are gitignored.
 
 Set `NEXT_PUBLIC_SITE_URL` to the public `https` origin before building.
 
@@ -62,6 +64,8 @@ This repository has no committed Spacefast config and does not name a team or sp
 
 ### Next.js security releases
 
-16.2.12 includes the July 2026 fixes (published as 16.2.11). Those covered a Server Actions DoS, a Turbopack single-locale middleware bypass, rewrite and Server Action SSRF, and image-optimization issues. This app has no Server Actions, no middleware, and no `rewrites()` built from request input. Image optimization is turned off (`images.unoptimized`).
+The app is on 16.3.8, the September 2026 patched 16.3 release, which Spacefast's automatic builds cover. That release includes the [September 2026 fixes](https://nextjs.org/blog/september-2026-security-release). The development-server MCP endpoint no longer accepts a cross-site read of project data (`CVE-2026-94486`). It only ever existed on `next dev`; production does not serve it. The same release covers image-optimization SSRF when `images.remotePatterns` is set (this app sets none, and `images.unoptimized` is on), Pages Router cache poisoning (this app is App Router only), metadata-image `dynamicParams` bypass under webpack, and Cache Components leaks. This app does not enable Cache Components and does not use `use cache` or Draft Mode.
 
-The 14 October 2026 and 3 November 2026 fixes shipped on 16.4.1 and 16.4.5 (latest 16.4 at the time of this note is 16.4.6). They cover Cache Components (`use cache`), `unstable_cache` combined with cache components, and image optimization on glibc. This app does not enable Cache Components and does not call `use cache` or `unstable_cache`. Spacefast's published automatic-build range is 16.2 and 16.3, so the app was not moved to 16.4. The image-optimization route is unused because optimization is off.
+16.3.8 also includes the July 2026 fixes that were on the 16.2 line (Server Actions DoS, Turbopack single-locale middleware bypass, rewrite SSRF). This app has no Server Actions, no middleware, and no request-built rewrites.
+
+The 14 October 2026 and 3 November 2026 fixes shipped on 16.4.1 and 16.4.5. They cover Cache Components and image optimization on glibc. Those features are off here. 16.4 is outside the 16.2/16.3 range Spacefast documents for automatic builds, so the app stays on 16.3.8.

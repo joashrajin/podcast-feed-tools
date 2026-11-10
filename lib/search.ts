@@ -35,9 +35,11 @@ type RawResult = {
   explicit?: unknown;
 };
 
-export function podcastHitsFromSearch(payload: unknown, limit = 12): PocketCastsHit[] {
-  const results = (payload as { results?: unknown })?.results;
-  if (!Array.isArray(results)) return [];
+/** `null` means the payload is not a search result. An empty array means no shows. */
+export function podcastHitsFromSearch(payload: unknown, limit = 12): PocketCastsHit[] | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const results = (payload as { results?: unknown }).results;
+  if (!Array.isArray(results)) return null;
   const seen = new Set<string>();
   const hits: PocketCastsHit[] = [];
   for (const item of results) {

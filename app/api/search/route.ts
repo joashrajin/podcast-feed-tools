@@ -34,6 +34,9 @@ export async function POST(req: NextRequest) {
       return jsonNoStore({ error: "Pocket Casts search returned something that couldn't be read." }, 502);
     }
     const shows = podcastHitsFromSearch(payload);
+    if (!shows) {
+      return jsonNoStore({ error: "Pocket Casts search returned something that couldn't be read." }, 502);
+    }
     return jsonNoStore({ query: term, shows, submitUrl: POCKET_CASTS_SUBMIT_URL });
   } catch (err) {
     if (err instanceof FetchError) {

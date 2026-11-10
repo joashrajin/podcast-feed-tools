@@ -22,6 +22,7 @@ describe("Pocket Casts search mapping", () => {
         },
       ],
     });
+    assert.ok(hits);
     assert.equal(hits.length, 1);
     assert.equal(
       hits[0].url,
@@ -33,6 +34,9 @@ describe("Pocket Casts search mapping", () => {
   it("points missing shows at the official submit form", () => {
     assert.equal(POCKET_CASTS_SUBMIT_URL, "https://pocketcasts.com/submit/");
     assert.deepEqual(podcastHitsFromSearch({ results: [] }), []);
+    assert.equal(podcastHitsFromSearch({}), null);
+    assert.equal(podcastHitsFromSearch(null), null);
+    assert.equal(podcastHitsFromSearch({ error: "upstream" }), null);
   });
 });
 

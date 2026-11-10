@@ -99,13 +99,38 @@ export function spotifyEmbedEntity(html: string): SpotifyEmbedEntity | undefined
   };
 }
 
-export function looksLikeFeed(contentType: string, body: string): boolean {
-  const sample = body.slice(0, 64_000).toLowerCase();
-  const trimmed = sample.trimStart();
-  if (!trimmed || trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html")) return false;
-  const rss = sample.includes("<rss") && sample.includes("<channel");
-  const atom = sample.includes("<feed") && (sample.includes("http://www.w3.org/2005/atom") || sample.includes("<entry"));
-  if (rss || atom) return true;
-  void contentType;
+export function looksLikeFeed(_contentType: string, body: string): boolean {
+  const sample = stripCommentsAndCdata(body.slice(0, 64_000));
+  const root = firstElementName(sample);
+  if (root === "rss") return /<channel(?:\s|>|\/)/i.test(sample);
+  if (root === "feed") return true;
   return false;
+}
+
+function stripCommentsAndCdata(xml: string): string {
+  let out = "";
+  let index = 0;
+  while (index < xml.length) {
+    if (xml.startsWith("<!--", index)) {
+      const end = xml.indexOf("-->", index + 4);
+      index = end === -1 ? xml.length : end + 3;
+      continue;
+    }
+    if (xml.startsWith("<![CDATA[", index)) {
+      const end = xml.indexOf("]]>", index + 9);
+      index = end === -1 ? xml.length : end + 3;
+      continue;
+    }
+    out += xml[index];
+    index += 1;
+  }
+  return out;
+}
+
+function firstElementName(xml: string): string | undefined {
+  const match = xml.match(/<([A-Za-z_][\w:.-]*)\b/);
+  if (!match) return undefined;
+  const name = match[1].toLowerCase();
+  const local = name.includes(":") ? name.slice(name.lastIndexOf(":") + 1) : name;
+  return local;
 }

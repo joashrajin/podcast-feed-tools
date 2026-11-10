@@ -45,6 +45,14 @@ describe("html helpers", () => {
     );
     assert.equal(looksLikeFeed("application/xml", "<?xml version=\"1.0\"?><rss version=\"2.0\">"), false);
     assert.equal(looksLikeFeed("text/plain", "hello"), false);
+    assert.equal(
+      looksLikeFeed("text/html", "<!-- <rss><channel></channel></rss> --><html></html>"),
+      false
+    );
+    assert.equal(
+      looksLikeFeed("text/xml", "<html><![CDATA[<rss><channel></channel></rss>]]></html>"),
+      false
+    );
   });
 
   it("keeps an apostrophe inside a quoted meta value", () => {

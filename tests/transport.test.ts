@@ -33,6 +33,24 @@ describe("safeFetch transport", () => {
     assert.match(result.body, /<channel>/);
   });
 
+  it("leaves gzip magic bytes alone when Content-Encoding is absent", async () => {
+    const raw = gzipSync(Buffer.from("   <rss><channel></channel></rss>"));
+    const fetchImpl: FetchLike = async () =>
+      new Response(raw, { status: 200, headers: { "content-type": "image/jpeg" } });
+    const result = await safeFetch("https://example.com/art.jpg", { userAgent: "test", fetchImpl, timeoutMs: 2000 });
+    assert.equal(result.bytes?.[0], 0x1f);
+    assert.equal(result.bytes?.[1], 0x8b);
+    assert.equal(result.body.includes("<channel>"), false);
+  });
+
+  it("inflates from Content-Encoding even when the decoded body starts with whitespace", async () => {
+    const raw = gzipSync(Buffer.from("   <rss><channel></channel></rss>"));
+    const fetchImpl: FetchLike = async () =>
+      new Response(raw, { status: 200, headers: { "content-encoding": "gzip", "content-type": "application/xml" } });
+    const result = await safeFetch("https://example.com/feed.xml", { userAgent: "test", fetchImpl, timeoutMs: 2000 });
+    assert.equal(result.body.trim(), "<rss><channel></channel></rss>");
+  });
+
   it("stops a gzip bomb while inflating", async () => {
     const bomb = gzipSync(Buffer.alloc(250_000, 7));
     const fetchImpl: FetchLike = async () =>
@@ -80,14 +98,62 @@ describe("safeFetch transport", () => {
     assert.equal(calls, 0);
   });
 
-  it("asks fetch for the public hostname, not a pre-resolved address", async () => {
-    let requested = "";
-    const fetchImpl: FetchLike = async (url) => {
-      requested = url;
-      return new Response("ok", { status: 200 });
+  it("refuses a public-looking name that resolves to a private address", async () => {
+    for (const address of ["10.1.2.3", "fd00::1"]) {
+      await assert.rejects(
+        () =>
+          safeFetch("https://rebind.example/feed", {
+            userAgent: "test",
+            timeoutMs: 2000,
+            lookupImpl: async () => [{ address, family: address.includes(":") ? 6 : 4 }],
+          }),
+        (err: unknown) => err instanceof FetchError && err.code === "blocked"
+      );
+    }
+  });
+
+  it("fails closed when DNS errors", async () => {
+    await assert.rejects(
+      () =>
+        safeFetch("https://rebind.example/feed", {
+          userAgent: "test",
+          timeoutMs: 2000,
+          lookupImpl: async () => {
+            throw new Error("servfail");
+          },
+        }),
+      (err: unknown) => err instanceof FetchError && err.code === "network"
+    );
+  });
+
+  it("aborts a DNS lookup that never returns", async () => {
+    const started = Date.now();
+    await assert.rejects(
+      () =>
+        safeFetch("https://rebind.example/feed", {
+          userAgent: "test",
+          timeoutMs: 150,
+          lookupImpl: () => new Promise(() => undefined),
+        }),
+      (err: unknown) => err instanceof FetchError && err.code === "timeout"
+    );
+    assert.ok(Date.now() - started < 1000);
+  });
+
+  it("aborts decompression that stalls", async () => {
+    const started = Date.now();
+    const fetchImpl: FetchLike = async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]));
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-encoding": "gzip" } });
     };
-    const result = await safeFetch("https://example.com/feed", { userAgent: "test", fetchImpl, timeoutMs: 5000 });
-    assert.equal(requested, "https://example.com/feed");
-    assert.equal(result.body, "ok");
+    await assert.rejects(
+      () => safeFetch("https://example.com/feed", { userAgent: "test", fetchImpl, timeoutMs: 150 }),
+      (err: unknown) => err instanceof FetchError && err.code === "timeout"
+    );
+    assert.ok(Date.now() - started < 1000);
   });
 });

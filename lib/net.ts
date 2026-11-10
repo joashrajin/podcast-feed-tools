@@ -1,19 +1,31 @@
+import http from "node:http";
+import https from "node:https";
+import { lookup as dnsLookup } from "node:dns";
 import { BlockList, isIP } from "node:net";
+import type { Readable } from "node:stream";
 
 /**
- * Outbound HTTP for both Node and Spacefast Functions.
+ * Outbound HTTP.
  *
- * Spacefast Functions are an OpenNext worker. The documented outbound API is
- * the standard fetch(), which reaches public HTTP(S) hosts on a claimed space
- * (https://spacefast.com/docs/functions/). That runtime does not implement
- * node:dns lookup, and node:http's custom lookup option is not honored, so
- * this module does not use either. Private literal addresses are refused here
- * before fetch. A redirect target is checked the same way. Connect-time
- * blocking of public names that rebind to a private address is the worker
- * fetch itself: Spacefast describes it as reaching public hosts, which is
- * Cloudflare's fetch, and that fetch refuses private networks. A live
- * Functions isolate was not booted in this environment; tests cover the
- * fetch() path with a stub and one public request.
+ * On Node (local dev, tests, `next start`) the socket is opened with
+ * `http.request` / `https.request` and a connect-time `lookup`. That lookup
+ * is the only resolution: any DNS error fails closed, any private address
+ * fails closed, and the connection is pinned to the addresses just checked.
+ * There is no earlier lookup that fetch() could disagree with.
+ *
+ * On Spacefast Functions the runtime is a Cloudflare worker. Its `fetch()`
+ * is the documented outbound API and it does not honor a custom lookup
+ * (https://spacefast.com/docs/functions/). Claimed spaces may call any
+ * public HTTP(S) host; the worker fetch refuses private networks. This
+ * file uses that fetch only when the isolate looks like a worker
+ * (`Cloudflare-Workers` or `WebSocketPair`). Rebinding protection on that
+ * path is the platform's, not an in-process pin. Any other runtime, where
+ * we can neither pin a connection nor recognise that worker, refuses the
+ * request.
+ *
+ * Decoding: Node's raw response is inflated only when Content-Encoding says
+ * gzip, br, or deflate. The worker fetch has already decoded the body, so
+ * that path never inflates, even if the header is still present.
  */
 
 export class FetchError extends Error {
@@ -65,8 +77,10 @@ const BLOCKED_HOSTS = new Set([
   "metadata.google.internal",
   "metadata.google",
 ]);
-
 const BLOCKED_SUFFIXES = [".localhost", ".local", ".internal", ".localdomain"];
+
+export type ResolvedAddress = { address: string; family: number };
+export type AddressLookup = (hostname: string) => Promise<ResolvedAddress[]>;
 
 function ipv4FromHextets(high: string, low: string): string | undefined {
   const hi = Number.parseInt(high, 16);
@@ -85,16 +99,13 @@ export function bareHost(hostname: string): string {
 
 export function isBlockedIp(ip: string): boolean {
   const value = bareHost(ip);
-
   const mappedDotted = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   if (mappedDotted) return blocked.check(mappedDotted[1], "ipv4");
-
   const mappedHex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
   if (mappedHex) {
     const v4 = ipv4FromHextets(mappedHex[1], mappedHex[2]);
     return v4 ? blocked.check(v4, "ipv4") : true;
   }
-
   if (value.startsWith("2002:")) {
     const parts = value.split(":");
     if (parts[1] && parts[2]) {
@@ -102,7 +113,6 @@ export function isBlockedIp(ip: string): boolean {
       if (v4 && blocked.check(v4, "ipv4")) return true;
     }
   }
-
   const kind = isIP(value);
   if (kind === 4) return blocked.check(value, "ipv4");
   if (kind === 6) return blocked.check(value, "ipv6");
@@ -134,7 +144,6 @@ export function assertPublicHttpUrl(raw: string, allowedHosts?: readonly string[
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new FetchError("Only http and https URLs are accepted.", "invalid-url");
   }
-
   const host = bareHost(url.hostname);
   if (!host || BLOCKED_HOSTS.has(host) || BLOCKED_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
     throw new FetchError("That address isn't public.", "blocked");
@@ -159,37 +168,56 @@ export function asHttpsUrl(raw: string | undefined): string | undefined {
   }
 }
 
-async function assertResolvedPublic(hostname: string, deadline: AbortSignal): Promise<void> {
+function defaultLookup(hostname: string): Promise<ResolvedAddress[]> {
+  return new Promise((resolve, reject) => {
+    dnsLookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+      if (err) reject(err);
+      else resolve(addresses);
+    });
+  });
+}
+
+/** One resolution. Errors fail closed. Private answers fail closed. */
+export async function resolvePinned(
+  hostname: string,
+  lookup: AddressLookup,
+  signal: AbortSignal
+): Promise<ResolvedAddress[]> {
   const host = bareHost(hostname);
   if (isIP(host) !== 0) {
     if (isBlockedIp(host)) throw new FetchError("That address isn't public.", "blocked");
-    return;
+    return [{ address: host, family: host.includes(":") ? 6 : 4 }];
   }
-  if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+  if (signal.aborted) throw new FetchError("The request timed out.", "timeout");
 
-  let lookup: typeof import("node:dns/promises").lookup;
+  let records: ResolvedAddress[];
   try {
-    lookup = (await import("node:dns/promises")).lookup;
-  } catch {
-    return;
-  }
-
-  try {
-    const records = await lookup(host, { all: true, verbatim: true });
-    if (records.length === 0 || records.some((record) => isBlockedIp(record.address))) {
-      throw new FetchError("That address isn't public.", "blocked");
-    }
+    records = await new Promise((resolve, reject) => {
+      const onAbort = () => reject(new FetchError("The request timed out.", "timeout"));
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      lookup(host).then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (err: unknown) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(err instanceof FetchError ? err : new FetchError("Couldn't resolve that host.", "network"));
+        }
+      );
+    });
   } catch (err) {
     if (err instanceof FetchError) throw err;
-    if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
-    const code = (err as { code?: string }).code;
-    if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ENODATA") {
-      throw new FetchError("Couldn't resolve that host.", "network");
-    }
-    // Workers-style runtimes expose a stub that cannot resolve. fetch() still
-    // refuses private destinations, so a missing DNS implementation is not a
-    // failed lookup of a real name.
+    throw new FetchError("Couldn't resolve that host.", "network");
   }
+  if (!records.length || records.some((record) => isBlockedIp(record.address))) {
+    throw new FetchError("That address isn't public.", "blocked");
+  }
+  return records;
 }
 
 export type SafeResponse = {
@@ -207,7 +235,6 @@ export type SafeFetchOptions = {
   userAgent: string;
   accept?: string;
   timeoutMs?: number;
-  /** Decoded body cap. Past this, the read stops. */
   maxBytes?: number;
   maxUncompressedBytes?: number;
   maxRedirects?: number;
@@ -215,19 +242,13 @@ export type SafeFetchOptions = {
   method?: "GET" | "POST";
   body?: string;
   headers?: Record<string, string>;
-  /** Keep a prefix instead of failing when the body exceeds maxBytes. */
   allowPartial?: boolean;
   haltWhen?: (url: URL) => boolean;
+  /** Test double for the HTTP exchange. Bodies are raw; Content-Encoding is honored. */
   fetchImpl?: FetchLike;
+  /** Test double for DNS. Production uses node:dns and fails closed. */
+  lookupImpl?: AddressLookup;
 };
-
-function headerRecord(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
-  headers.forEach((value, key) => {
-    out[key.toLowerCase()] = value;
-  });
-  return out;
-}
 
 function concat(chunks: Uint8Array[]): Uint8Array {
   const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
@@ -236,6 +257,27 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   for (const chunk of chunks) {
     out.set(chunk, offset);
     offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function isWorkersRuntime(): boolean {
+  const ua = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent;
+  if (ua === "Cloudflare-Workers") return true;
+  return typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair === "function";
+}
+
+function headerRecord(headers: Headers | http.IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      out[key.toLowerCase()] = value;
+    });
+    return out;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") out[key.toLowerCase()] = value;
+    else if (Array.isArray(value)) out[key.toLowerCase()] = value.join(", ");
   }
   return out;
 }
@@ -270,17 +312,20 @@ async function readPlain(
   return { bytes: concat(chunks), truncated: false };
 }
 
-async function inflateCapped(
-  input: Uint8Array,
+/** Inflate a raw Node response. `signal` aborts a stalled decoder. */
+export async function inflateCapped(
+  source: Readable,
   encoding: string,
-  max: number
+  max: number,
+  signal: AbortSignal
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   const zlib = await import("node:zlib");
-  const stream = encoding.includes("br")
+  const decoder = encoding.includes("br")
     ? zlib.createBrotliDecompress()
     : encoding.includes("deflate")
       ? zlib.createInflate()
       : zlib.createGunzip();
+  source.pipe(decoder);
 
   return await new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -289,154 +334,333 @@ async function inflateCapped(
     const finish = (error?: Error, value?: { bytes: Uint8Array; truncated: boolean }) => {
       if (settled) return;
       settled = true;
+      signal.removeEventListener("abort", onAbort);
       if (error) reject(error);
       else resolve(value!);
     };
-    stream.on("data", (chunk: Buffer) => {
+    const onAbort = () => {
+      source.destroy();
+      decoder.destroy();
+      finish(new FetchError("The request timed out.", "timeout"));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort);
+    decoder.on("data", (chunk: Buffer) => {
       if (settled) return;
-      if (total >= max) {
-        stream.destroy();
-        finish(undefined, { bytes: concat(chunks), truncated: true });
-        return;
-      }
       if (total + chunk.length > max) {
-        chunks.push(chunk.subarray(0, max - total));
-        total = max;
-        stream.destroy();
+        const room = max - total;
+        if (room > 0) chunks.push(chunk.subarray(0, room));
+        source.destroy();
+        decoder.destroy();
         finish(undefined, { bytes: concat(chunks), truncated: true });
         return;
       }
       chunks.push(chunk);
       total += chunk.length;
     });
-    stream.on("end", () => finish(undefined, { bytes: concat(chunks), truncated: false }));
-    stream.on("error", () => {
-      if (!settled) finish(new FetchError("The response could not be decoded.", "network"));
+    decoder.on("end", () => finish(undefined, { bytes: concat(chunks), truncated: false }));
+    decoder.on("error", () => {
+      if (signal.aborted) finish(new FetchError("The request timed out.", "timeout"));
+      else finish(new FetchError("The response could not be decoded.", "network"));
     });
-    stream.end(Buffer.from(input));
   });
 }
 
-function prepend(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  first: Uint8Array
-): ReadableStreamDefaultReader<Uint8Array> {
-  let pending: Uint8Array | null = first;
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (pending) {
-        controller.enqueue(pending);
-        pending = null;
+function readIncoming(
+  res: http.IncomingMessage,
+  max: number,
+  signal: AbortSignal
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (error?: Error, value?: { bytes: Uint8Array; truncated: boolean }) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve(value!);
+    };
+    const onAbort = () => {
+      res.destroy();
+      finish(new FetchError("The request timed out.", "timeout"));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort);
+    res.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      if (total + chunk.length > max) {
+        const room = max - total;
+        if (room > 0) chunks.push(chunk.subarray(0, room));
+        res.destroy();
+        finish(undefined, { bytes: concat(chunks), truncated: true });
         return;
       }
-      const next = await reader.read();
-      if (next.done) controller.close();
-      else if (next.value) controller.enqueue(next.value);
-    },
-    cancel(reason) {
-      return reader.cancel(reason);
-    },
+      chunks.push(chunk);
+      total += chunk.length;
+    });
+    res.on("end", () => finish(undefined, { bytes: concat(chunks), truncated: false }));
+    res.on("error", () => {
+      if (signal.aborted) finish(new FetchError("The request timed out.", "timeout"));
+      else finish(new FetchError("The connection failed.", "network"));
+    });
   });
-  return stream.getReader();
 }
 
-async function readDecoded(
+type Hop = {
+  status: number;
+  headers: Record<string, string>;
+  bytes: Uint8Array;
+  truncated: boolean;
+};
+
+function startDeadline(ms: number): { signal: AbortSignal; cancel: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer),
+  };
+}
+
+function callbackError(err: unknown): NodeJS.ErrnoException {
+  const error = (err instanceof Error ? err : new Error("lookup failed")) as NodeJS.ErrnoException;
+  if (err instanceof FetchError) {
+    error.code = err.code === "blocked" ? "EBLOCKED" : err.code === "timeout" ? "ETIMEDOUT" : "EAI_FAIL";
+  }
+  return error;
+}
+
+function nodeHop(
+  url: URL,
+  options: SafeFetchOptions,
+  lookup: AddressLookup,
+  signal: AbortSignal,
+  maxDecoded: number
+): Promise<Hop> {
+  const lib = url.protocol === "https:" ? https : http;
+  const host = bareHost(url.hostname);
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      {
+        protocol: url.protocol,
+        hostname: host,
+        port: url.port || undefined,
+        path: `${url.pathname}${url.search}`,
+        method: options.method ?? "GET",
+        servername: host,
+        headers: {
+          accept: options.accept ?? "*/*",
+          "accept-encoding": "gzip, deflate, br",
+          "user-agent": options.userAgent,
+          host,
+          ...(options.body ? { "content-type": "application/json" } : {}),
+          ...options.headers,
+        },
+        lookup: (hostname, optionsOrCallback, maybeCallback) => {
+          const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+          const all = typeof optionsOrCallback === "object" && optionsOrCallback?.all === true;
+          if (!callback) return;
+          resolvePinned(String(hostname), lookup, signal).then(
+            (records) => {
+              if (all) callback(null, records);
+              else callback(null, records[0].address, records[0].family);
+            },
+            (err: unknown) => callback(callbackError(err), "", 4)
+          );
+        },
+      },
+      (res) => {
+        const headers = headerRecord(res.headers);
+        const redirect = [301, 302, 303, 307, 308].includes(res.statusCode ?? 0);
+        if (redirect && headers.location) {
+          res.destroy();
+          resolve({ status: res.statusCode ?? 0, headers, bytes: new Uint8Array(), truncated: false });
+          return;
+        }
+        const encoding = headers["content-encoding"] ?? "";
+        const compressed = /gzip|\bbr\b|deflate/.test(encoding);
+        const done = compressed
+          ? inflateCapped(res, encoding, maxDecoded, signal)
+          : readIncoming(res, maxDecoded, signal);
+        done.then(
+          (body) => resolve({ status: res.statusCode ?? 0, headers, ...body }),
+          reject
+        );
+      }
+    );
+    const onAbort = () => req.destroy(callbackError(new FetchError("The request timed out.", "timeout")));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    req.on("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EBLOCKED" || err.message.includes("isn't public")) {
+        reject(new FetchError("That address isn't public.", "blocked"));
+      } else if (code === "ETIMEDOUT" || signal.aborted || err.name === "AbortError") {
+        reject(new FetchError("The request timed out.", "timeout"));
+      } else {
+        reject(new FetchError("The connection failed.", "network"));
+      }
+    });
+    if (options.body && (options.method ?? "GET") !== "GET") req.write(options.body);
+    req.end();
+  });
+}
+
+async function stubHop(
   response: Response,
   maxDecoded: number,
   signal: AbortSignal
-): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  const reader = response.body?.getReader();
-  if (!reader) return { bytes: new Uint8Array(), truncated: false };
-  const encoding = (response.headers.get("content-encoding") ?? "").toLowerCase();
-  const rawPreview = await reader.read();
-  if (rawPreview.done || !rawPreview.value) {
-    return { bytes: rawPreview.value ?? new Uint8Array(), truncated: false };
+): Promise<Hop> {
+  const headers = headerRecord(response.headers);
+  const encoding = headers["content-encoding"] ?? "";
+  if (!response.body) {
+    return { status: response.status, headers, bytes: new Uint8Array(), truncated: false };
   }
-  const first = rawPreview.value;
-  const compressed =
-    (first.length >= 2 && first[0] === 0x1f && first[1] === 0x8b) ||
-    (/br|deflate/.test(encoding) && first[0] !== 0x7b && first[0] !== 0x3c && first[0] !== 0xef);
-  const prefixReader = prepend(reader, first);
-  if (!compressed) return readPlain(prefixReader, maxDecoded, signal);
+  if (/gzip|\bbr\b|deflate/.test(encoding)) {
+    const { Readable } = await import("node:stream");
+    const reader = response.body.getReader();
+    const source = new Readable({
+      async read() {
+        try {
+          if (signal.aborted) {
+            this.destroy();
+            return;
+          }
+          const { done, value } = await reader.read();
+          if (done) this.push(null);
+          else this.push(Buffer.from(value));
+        } catch (err) {
+          this.destroy(err instanceof Error ? err : new Error("read failed"));
+        }
+      },
+    });
+    const body = await inflateCapped(source, encoding, maxDecoded, signal);
+    return { status: response.status, headers, ...body };
+  }
+  const body = await readPlain(response.body.getReader(), maxDecoded, signal);
+  return { status: response.status, headers, ...body };
+}
 
-  // Cap the compressed input too, then inflate with an output cap so a small
-  // bomb cannot expand without bound.
-  const wireCap = Math.min(Math.max(maxDecoded, 65_536), 8_000_000);
-  const raw = await readPlain(prefixReader, wireCap, signal);
+async function workersHop(
+  url: URL,
+  options: SafeFetchOptions,
+  signal: AbortSignal,
+  maxDecoded: number
+): Promise<Hop> {
+  let response: Response;
   try {
-    const inflated = await inflateCapped(raw.bytes, encoding, maxDecoded);
-    return { bytes: inflated.bytes, truncated: raw.truncated || inflated.truncated };
+    response = await fetch(url.toString(), {
+      method: options.method ?? "GET",
+      redirect: "manual",
+      signal,
+      headers: {
+        accept: options.accept ?? "*/*",
+        "user-agent": options.userAgent,
+        ...(options.body ? { "content-type": "application/json" } : {}),
+        ...options.headers,
+      },
+      body: options.body,
+    });
   } catch (err) {
-    if (err instanceof FetchError) throw err;
-    throw new FetchError("The response could not be decoded.", "network");
+    if (signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+      throw new FetchError("The request timed out.", "timeout");
+    }
+    throw new FetchError("The connection failed.", "network");
   }
+  const headers = headerRecord(response.headers);
+  if (!response.body) {
+    return { status: response.status, headers, bytes: new Uint8Array(), truncated: false };
+  }
+  // The worker runtime has already decoded Content-Encoding. Do not inflate again.
+  const body = await readPlain(response.body.getReader(), maxDecoded, signal);
+  return { status: response.status, headers, ...body };
 }
 
 export async function safeFetch(input: string, options: SafeFetchOptions): Promise<SafeResponse> {
   const timeoutMs = options.timeoutMs ?? 10_000;
-  const deadline = AbortSignal.timeout(timeoutMs);
+  const deadlineHandle = startDeadline(timeoutMs);
+  const deadline = deadlineHandle.signal;
   const maxDecoded = options.maxUncompressedBytes ?? options.maxBytes ?? 1_000_000;
   const allowPartial = options.allowPartial ?? false;
   const maxRedirects = options.maxRedirects ?? 5;
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const lookup = options.lookupImpl ?? defaultLookup;
+  const workers = isWorkersRuntime();
 
-  let current = assertPublicHttpUrl(input, options.allowedHosts);
-  if (options.haltWhen?.(current)) {
-    return { url: current.toString(), status: 200, headers: {}, body: "", bytes: new Uint8Array(), truncated: false };
-  }
+  try {
+    if (!options.fetchImpl && !workers && !process.versions?.node) {
+      throw new FetchError(
+        "This runtime cannot pin outbound connections, and it is not the Spacefast worker whose fetch refuses private networks. Feed fetching is refused.",
+        "blocked"
+      );
+    }
 
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
-    await assertResolvedPublic(current.hostname, deadline);
+    let current = assertPublicHttpUrl(input, options.allowedHosts);
+    if (options.haltWhen?.(current)) {
+      return { url: current.toString(), status: 200, headers: {}, body: "", bytes: new Uint8Array(), truncated: false };
+    }
 
-    let response: Response;
-    try {
-      response = await fetchImpl(current.toString(), {
-        method: options.method ?? "GET",
-        redirect: "manual",
-        signal: deadline,
-        headers: {
-          accept: options.accept ?? "*/*",
-          "user-agent": options.userAgent,
-          ...(options.body ? { "content-type": "application/json" } : {}),
-          ...options.headers,
-        },
-        body: options.body,
-      });
-    } catch (err) {
-      if (deadline.aborted || (err instanceof Error && err.name === "AbortError")) {
-        throw new FetchError("The request timed out.", "timeout");
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+      const result = options.fetchImpl
+        ? await (async () => {
+            await resolvePinned(current.hostname, lookup, deadline);
+            let response: Response;
+            try {
+              response = await options.fetchImpl!(current.toString(), {
+                signal: deadline,
+                method: options.method ?? "GET",
+              });
+            } catch (err) {
+              if (deadline.aborted || (err instanceof Error && err.name === "AbortError")) {
+                throw new FetchError("The request timed out.", "timeout");
+              }
+              throw err instanceof FetchError ? err : new FetchError("The connection failed.", "network");
+            }
+            return stubHop(response, maxDecoded, deadline);
+          })()
+        : workers
+          ? await workersHop(current, options, deadline, maxDecoded)
+          : await nodeHop(current, options, lookup, deadline, maxDecoded);
+
+      const location = result.headers.location;
+      const redirect = [301, 302, 303, 307, 308].includes(result.status);
+      if (redirect && location) {
+        if (hop === maxRedirects) throw new FetchError("Too many redirects.", "too-many-redirects");
+        const next = assertPublicHttpUrl(new URL(location, current).toString(), options.allowedHosts);
+        if (options.haltWhen?.(next)) {
+          return {
+            url: next.toString(),
+            status: result.status,
+            headers: result.headers,
+            body: "",
+            bytes: new Uint8Array(),
+            truncated: false,
+          };
+        }
+        current = next;
+        continue;
       }
-      throw new FetchError("The connection failed.", "network");
-    }
 
-    const headers = headerRecord(response.headers);
-    const location = headers.location;
-    const redirect = [301, 302, 303, 307, 308].includes(response.status);
-    if (redirect && location) {
-      await response.body?.cancel();
-      if (hop === maxRedirects) throw new FetchError("Too many redirects.", "too-many-redirects");
-      const next = assertPublicHttpUrl(new URL(location, current).toString(), options.allowedHosts);
-      if (options.haltWhen?.(next)) {
-        return { url: next.toString(), status: response.status, headers, body: "", bytes: new Uint8Array(), truncated: false };
-      }
-      current = next;
-      continue;
+      if (result.truncated && !allowPartial) throw new FetchError("The response is too large.", "too-large");
+      return {
+        url: current.toString(),
+        status: result.status,
+        headers: result.headers,
+        body: new TextDecoder().decode(result.bytes),
+        bytes: result.bytes,
+        truncated: result.truncated,
+      };
     }
-
-    const decoded = await readDecoded(response, maxDecoded, deadline);
-    if (decoded.truncated && !allowPartial) {
-      throw new FetchError("The response is too large.", "too-large");
-    }
-    return {
-      url: current.toString(),
-      status: response.status,
-      headers,
-      body: new TextDecoder().decode(decoded.bytes),
-      bytes: decoded.bytes,
-      truncated: decoded.truncated,
-    };
+    throw new FetchError("Too many redirects.", "too-many-redirects");
+  } finally {
+    deadlineHandle.cancel();
   }
-
-  throw new FetchError("Too many redirects.", "too-many-redirects");
 }
