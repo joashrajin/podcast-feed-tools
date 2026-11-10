@@ -1,31 +1,50 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import Link from "next/link";
+import { IBM_Plex_Mono, Newsreader, Public_Sans } from "next/font/google";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
+import SiteHeader from "./site-header";
 import "./globals.css";
 
-const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+const sans = Public_Sans({
+  subsets: ["latin"],
+  variable: "--font-public-sans",
+  display: "swap",
+});
+
+const serif = Newsreader({
+  subsets: ["latin"],
+  style: ["normal", "italic"],
+  variable: "--font-newsreader",
+  display: "swap",
+});
+
+const mono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
+
+const themeBoot = `(function(){try{var k="feed-tools-theme";var t=localStorage.getItem(k);if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);}catch(e){}})();`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: `${SITE_NAME} — Get the RSS feed from any Pocket Casts link`,
+    default: `${SITE_NAME} — search, locate, check`,
     template: `%s · ${SITE_NAME}`,
   },
   description:
-    "Paste a Pocket Casts share link (pca.st) and get the podcast's RSS feed instantly. Free tools for podcast creators: feed validator, debugging, and Pocket Casts submission checks.",
+    "Search Pocket Casts, turn a show link into an RSS feed, and check a public feed.",
   keywords: [
-    "pocket casts rss feed",
-    "pca.st rss",
-    "podcast rss feed finder",
+    "podcast rss feed",
+    "pocket casts rss",
+    "apple podcasts rss",
+    "spotify podcast rss",
     "podcast feed validator",
-    "podcast feed debugger",
   ],
   openGraph: {
-    title: `${SITE_NAME} — Pocket Casts RSS & feed tools for podcasters`,
+    title: `${SITE_NAME} — RSS from a show link`,
     description:
-      "Turn any Pocket Casts link into an RSS feed, and debug your podcast feed like a pro.",
+      "Resolve a Pocket Casts, Apple Podcasts, or Spotify link to the show's public RSS feed, and check a feed for the problems that stop it updating.",
     url: SITE_URL,
     siteName: SITE_NAME,
     type: "website",
@@ -40,29 +59,24 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${sans.variable} ${serif.variable} ${mono.variable}`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-        <header className="border-b border-zinc-200 dark:border-zinc-800">
-          <nav className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4">
-            <Link href="/" className="text-lg font-bold tracking-tight">
-              🐱 {SITE_NAME}
-            </Link>
-            <div className="flex gap-6 text-sm">
-              <Link href="/" className="hover:underline">
-                RSS Finder
-              </Link>
-              <Link href="/validator" className="hover:underline">
-                Feed Validator
-              </Link>
-            </div>
-          </nav>
-        </header>
-        <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-12">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBoot }} />
+      </head>
+      <body>
+        <a className="skip" href="#content">
+          Skip to content
+        </a>
+        <SiteHeader />
+        <main id="content" className="shell">
           {children}
         </main>
-        <footer className="border-t border-zinc-200 py-8 text-center text-sm text-zinc-500 dark:border-zinc-800">
-          {SITE_NAME} — free tools for podcast creators.
+        <footer className="footer">
+          <div className="shell">
+            {SITE_NAME}. Public directories only. Private and paid feeds are not returned.
+          </div>
         </footer>
       </body>
     </html>

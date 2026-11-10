@@ -1,21 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import { resolvePocketCastsUrl, ResolveError } from "@/lib/resolve";
+import { NextRequest } from "next/server";
+import { jsonNoStore, readSubmittedUrl } from "@/lib/api";
+import { ResolveError, resolveShowUrl } from "@/lib/resolve";
 
 export async function POST(req: NextRequest) {
-  const { url } = await req.json().catch(() => ({}));
-  if (typeof url !== "string" || !url.trim()) {
-    return NextResponse.json({ error: "Missing url" }, { status: 400 });
-  }
+  const url = await readSubmittedUrl(req);
+  if (typeof url !== "string") return url;
   try {
-    const result = await resolvePocketCastsUrl(url);
-    return NextResponse.json(result);
+    const result = await resolveShowUrl(url);
+    return jsonNoStore(result);
   } catch (err) {
-    if (err instanceof ResolveError) {
-      return NextResponse.json({ error: err.message }, { status: 422 });
-    }
-    return NextResponse.json(
-      { error: "Something went wrong resolving that link." },
-      { status: 500 }
-    );
+    if (err instanceof ResolveError) return jsonNoStore({ error: err.message }, 422);
+    return jsonNoStore({ error: "Something went wrong resolving that link." }, 500);
   }
 }

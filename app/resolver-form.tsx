@@ -1,7 +1,28 @@
 "use client";
 
-import { useState } from "react";
-import type { ResolveResult } from "@/lib/resolve";
+import { useRef, useState } from "react";
+import { detectPlatform } from "@/lib/platforms";
+import type { MatchSource, Platform, ResolveResult } from "@/lib/types";
+
+const platformLabel: Record<Platform, string> = {
+  pocketcasts: "Pocket Casts",
+  apple: "Apple Podcasts",
+  spotify: "Spotify",
+};
+
+const sourceLabel: Record<MatchSource, string> = {
+  "pocketcasts-catalog": "Feed address taken from the Pocket Casts catalog.",
+  "itunes-lookup": "Feed address returned by Apple's lookup API.",
+  "itunes-search": "Matched by show name in the Apple Podcasts directory.",
+};
+
+function loadingMessage(value: string): string {
+  const platform = detectPlatform(value);
+  if (platform === "apple") return "Asking Apple's lookup API…";
+  if (platform === "spotify") return "Reading the Spotify show name, then matching Apple Podcasts…";
+  if (platform === "pocketcasts") return "Reading the Pocket Casts catalog…";
+  return "Resolving…";
+}
 
 export default function ResolverForm() {
   const [url, setUrl] = useState("");
@@ -9,97 +30,134 @@ export default function ResolverForm() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const [hideArt, setHideArt] = useState(false);
+  const requestId = useRef(0);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const current = ++requestId.current;
     setLoading(true);
     setError(null);
     setResult(null);
     setCopied(false);
+    setCopyError(false);
+    setHideArt(false);
     try {
       const res = await fetch("/api/resolve", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      const data = await res.json();
-      if (!res.ok) setError(data.error ?? "Something went wrong.");
-      else setResult(data);
+      const data = await res.json().catch(() => ({}));
+      if (current !== requestId.current) return;
+      if (!res.ok) setError(typeof data.error === "string" ? data.error : "Something went wrong.");
+      else setResult(data as ResolveResult);
     } catch {
-      setError("Network error — please try again.");
+      if (current !== requestId.current) return;
+      setError("Network error. Try again.");
     } finally {
-      setLoading(false);
+      if (current === requestId.current) setLoading(false);
+    }
+  }
+
+  async function copyFeed() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.feedUrl);
+      setCopied(true);
+      setCopyError(false);
+    } catch {
+      setCopied(false);
+      setCopyError(true);
     }
   }
 
   return (
-    <div>
-      <form onSubmit={submit} className="flex gap-2">
-        <input
-          type="url"
-          required
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://pca.st/…"
-          className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-sm shadow-sm outline-none focus:border-red-500 dark:border-zinc-700 dark:bg-zinc-900"
-        />
-        <button
-          type="submit"
-          disabled={loading}
-          className="rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-        >
-          {loading ? "Sniffing…" : "Get RSS"}
-        </button>
+    <div className="form">
+      <form
+        onSubmit={submit}
+        aria-busy={loading}
+        // A native submit reloads the page. The handler always cancels it.
+        action="#"
+      >
+        <label htmlFor="show-url">Show link</label>
+        <div className="form-row">
+          <input
+            id="show-url"
+            className="input"
+            type="text"
+            inputMode="url"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://podcasts.apple.com/…"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "resolve-error" : "resolve-hint"}
+          />
+          <button className="button" type="submit" disabled={loading}>
+            {loading ? "Resolving" : "Resolve"}
+          </button>
+        </div>
+        <p id="resolve-hint" className="hint">
+          pca.st · pocketcasts.com · podcasts.apple.com · open.spotify.com
+        </p>
       </form>
 
+      {loading && (
+        <p className="status" role="status">
+          {loadingMessage(url)}
+        </p>
+      )}
+
       {error && (
-        <p className="mt-4 rounded-lg bg-red-50 p-4 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
+        <p id="resolve-error" className="notice" role="alert">
           {error}
         </p>
       )}
 
       {result && (
-        <div className="mt-6 flex gap-4 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          {result.artwork && (
+        <article className="result" aria-live="polite">
+          {result.artwork && !hideArt && (
+            // Artwork hosts vary by directory. next/image would require a remote allow-list we don't control.
             // eslint-disable-next-line @next/next/no-img-element
             <img
+              className="result-art"
               src={result.artwork}
               alt=""
-              className="h-20 w-20 rounded-lg object-cover"
+              width={72}
+              height={72}
+              referrerPolicy="no-referrer"
+              onError={() => setHideArt(true)}
             />
           )}
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold">{result.title ?? "Podcast"}</p>
-            {result.author && (
-              <p className="text-sm text-zinc-500">{result.author}</p>
-            )}
-            <div className="mt-3 flex items-center gap-2">
-              <code className="block flex-1 truncate rounded bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-800">
-                {result.feedUrl}
-              </code>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(result.feedUrl);
-                  setCopied(true);
-                }}
-                className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-              >
-                {copied ? "Copied ✓" : "Copy"}
-              </button>
+          <div>
+            <p className="result-kicker">{platformLabel[result.platform]}</p>
+            <h2>{result.title ?? "Podcast"}</h2>
+            {result.author && <p className="byline">{result.author}</p>}
+            <div className="feed-line">
+              <p className="feed-label">RSS feed</p>
+              <div className="feed-value">
+                <p className="feed-url">{result.feedUrl}</p>
+                <button type="button" className="text-button" onClick={copyFeed}>
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
             </div>
-            <p className="mt-2 text-xs text-zinc-400">
-              Resolved via{" "}
-              {result.source === "pocketcasts" ? "Pocket Casts" : "Apple Podcasts directory"}
-              {" · "}
-              <a
-                href={`/validator?url=${encodeURIComponent(result.feedUrl)}`}
-                className="underline"
-              >
-                validate this feed →
-              </a>
+            {copyError && (
+              <p className="hint" role="status">
+                Copy failed. Select the address above.
+              </p>
+            )}
+            <p className="result-meta">
+              {sourceLabel[result.matchedBy]}{" "}
+              <a href={`/tools?url=${encodeURIComponent(result.feedUrl)}`}>Check this feed</a>
             </p>
           </div>
-        </div>
+        </article>
       )}
     </div>
   );
