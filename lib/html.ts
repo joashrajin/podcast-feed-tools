@@ -16,26 +16,26 @@ export function decodeEntities(value: string): string {
     .replace(/&amp;/gi, "&");
 }
 
-export function metaContent(html: string, property: string): string | undefined {
-  const prop = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const patterns = [
-    new RegExp(
-      `<meta\\b[^>]*?(?:property|name)\\s*=\\s*["']${prop}["'][^>]*?content\\s*=\\s*["']([^"']*)["'][^>]*>`,
-      "i"
-    ),
-    new RegExp(
-      `<meta\\b[^>]*?content\\s*=\\s*["']([^"']*)["'][^>]*?(?:property|name)\\s*=\\s*["']${prop}["'][^>]*>`,
-      "i"
-    ),
-  ];
-  for (const pattern of patterns) {
-    const hit = html.match(pattern)?.[1];
-    if (hit) {
-      const decoded = decodeEntities(hit).replace(/\s+/g, " ").trim();
-      if (decoded) return decoded;
-    }
+function metaTag(html: string, property: string): string | undefined {
+  const tags = html.match(/<meta\b[^>]*>/gi) ?? [];
+  const wanted = property.toLowerCase();
+  for (const tag of tags) {
+    const name = (attr(tag, "property") ?? attr(tag, "name"))?.toLowerCase();
+    if (name === wanted) return attr(tag, "content");
   }
   return undefined;
+}
+
+function attr(tag: string, name: string): string | undefined {
+  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
+  return match?.[2];
+}
+
+export function metaContent(html: string, property: string): string | undefined {
+  const raw = metaTag(html, property);
+  if (!raw) return undefined;
+  const decoded = decodeEntities(raw).replace(/\s+/g, " ").trim();
+  return decoded || undefined;
 }
 
 /** "Podcast · The New York Times · …" → "The New York Times". */
@@ -100,15 +100,12 @@ export function spotifyEmbedEntity(html: string): SpotifyEmbedEntity | undefined
 }
 
 export function looksLikeFeed(contentType: string, body: string): boolean {
-  if (/xml|rss|atom/i.test(contentType) && !/html/i.test(contentType)) return true;
-  const head = body.trimStart().slice(0, 400).toLowerCase();
-  if (!head) return false;
-  if (head.startsWith("<!doctype html") || head.startsWith("<html")) return false;
-  return (
-    head.startsWith("<?xml") ||
-    head.startsWith("<rss") ||
-    head.startsWith("<feed") ||
-    /^<\?xml[\s\S]{0,200}<rss/.test(head) ||
-    /^<\?xml[\s\S]{0,200}<feed/.test(head)
-  );
+  const sample = body.slice(0, 64_000).toLowerCase();
+  const trimmed = sample.trimStart();
+  if (!trimmed || trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html")) return false;
+  const rss = sample.includes("<rss") && sample.includes("<channel");
+  const atom = sample.includes("<feed") && (sample.includes("http://www.w3.org/2005/atom") || sample.includes("<entry"));
+  if (rss || atom) return true;
+  void contentType;
+  return false;
 }

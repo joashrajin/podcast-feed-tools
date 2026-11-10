@@ -6,6 +6,12 @@ import { SITE_NAME } from "@/lib/site";
 
 const THEME_KEY = "feed-tools-theme";
 
+const links = [
+  { href: "/", label: "Search" },
+  { href: "/locate", label: "Locator" },
+  { href: "/tools", label: "Feed tools" },
+];
+
 export default function SiteHeader() {
   const pathname = usePathname();
 
@@ -26,15 +32,17 @@ export default function SiteHeader() {
           <Link href="/" className="mark">
             {SITE_NAME}
           </Link>
-          <p className="kicker">RSS desk</p>
+          <p className="kicker">Search, locate, check</p>
         </div>
         <nav className="nav" aria-label="Primary">
-          <Link href="/" aria-current={pathname === "/" ? "page" : undefined}>
-            Finder
-          </Link>
-          <Link href="/validator" aria-current={pathname.startsWith("/validator") ? "page" : undefined}>
-            Validator
-          </Link>
+          {links.map((link) => {
+            const current = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
+            return (
+              <Link key={link.href} href={link.href} aria-current={current ? "page" : undefined}>
+                {link.label}
+              </Link>
+            );
+          })}
           <button type="button" className="theme-toggle" onClick={toggleTheme}>
             <span className="when-light">Dark</span>
             <span className="when-dark">Light</span>

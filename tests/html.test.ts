@@ -36,10 +36,19 @@ describe("html helpers", () => {
     assert.equal(entity?.image, "https://i.scdn.co/image/ab");
   });
 
-  it("tells a feed from a website", () => {
-    assert.equal(looksLikeFeed("application/rss+xml", ""), true);
+  it("tells a feed from a website or a bare XML document", () => {
+    assert.equal(looksLikeFeed("application/rss+xml", ""), false);
     assert.equal(looksLikeFeed("text/html", "<!doctype html><html>"), false);
-    assert.equal(looksLikeFeed("application/octet-stream", "<?xml version=\"1.0\"?><rss version=\"2.0\">"), true);
+    assert.equal(
+      looksLikeFeed("application/xml", "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel></channel></rss>"),
+      true
+    );
+    assert.equal(looksLikeFeed("application/xml", "<?xml version=\"1.0\"?><rss version=\"2.0\">"), false);
     assert.equal(looksLikeFeed("text/plain", "hello"), false);
+  });
+
+  it("keeps an apostrophe inside a quoted meta value", () => {
+    const html = `<meta property="og:title" content="Conan O'Brien Needs a Friend">`;
+    assert.equal(metaContent(html, "og:title"), "Conan O'Brien Needs a Friend");
   });
 });

@@ -9,18 +9,28 @@ export type DirectoryHit = {
 export type MatchOutcome =
   | { status: "match"; hit: DirectoryHit }
   | { status: "none" }
+  | { status: "conflict"; hit: DirectoryHit }
   | { status: "ambiguous"; candidates: DirectoryHit[] };
 
-/** Fold case, accents, and punctuation so "Science Vs." and "science vs" compare equal. */
+/** Fold case, accents, and punctuation. Letters outside Latin, including CJK, stay. */
 export function normalizeName(value: string): string {
   return value
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function publisherConflicts(hit: DirectoryHit, author?: string): boolean {
+  if (!author?.trim()) return false;
+  const wanted = normalizeName(author);
+  if (!wanted) return false;
+  const got = normalizeName(hit.author ?? "");
+  if (!got) return false;
+  return got !== wanted;
 }
 
 /**
@@ -41,27 +51,15 @@ export function pickDirectoryHit(
     (hit) => hit.feedUrl && hit.title && normalizeName(hit.title) === wanted
   );
   if (exact.length === 0) return { status: "none" };
-  if (exact.length === 1) return { status: "match", hit: exact[0] };
 
-  const feeds = new Set(exact.map((hit) => hit.feedUrl));
-  if (feeds.size === 1) return { status: "match", hit: exact[0] };
+  const compatible = exact.filter((hit) => !publisherConflicts(hit, author));
+  if (compatible.length === 0) return { status: "conflict", hit: exact[0] };
+  if (compatible.length === 1) return { status: "match", hit: compatible[0] };
 
-  if (author) {
-    const wantedAuthor = normalizeName(author);
-    if (wantedAuthor) {
-      const byAuthor = exact.filter(
-        (hit) => normalizeName(hit.author ?? "") === wantedAuthor
-      );
-      if (byAuthor.length === 1) return { status: "match", hit: byAuthor[0] };
-      if (byAuthor.length > 1) {
-        const authorFeeds = new Set(byAuthor.map((hit) => hit.feedUrl));
-        if (authorFeeds.size === 1) return { status: "match", hit: byAuthor[0] };
-        return { status: "ambiguous", candidates: byAuthor.slice(0, 4) };
-      }
-    }
-  }
+  const feeds = new Set(compatible.map((hit) => hit.feedUrl));
+  if (feeds.size === 1) return { status: "match", hit: compatible[0] };
 
-  return { status: "ambiguous", candidates: exact.slice(0, 4) };
+  return { status: "ambiguous", candidates: compatible.slice(0, 4) };
 }
 
 export function candidateLabel(hit: DirectoryHit): string {

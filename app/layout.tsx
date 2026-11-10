@@ -29,11 +29,11 @@ const themeBoot = `(function(){try{var k="feed-tools-theme";var t=localStorage.g
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: `${SITE_NAME} — RSS from a show link`,
+    default: `${SITE_NAME} — search, locate, check`,
     template: `%s · ${SITE_NAME}`,
   },
   description:
-    "Paste a Pocket Casts, Apple Podcasts, or Spotify show link and get the public RSS feed. Includes a podcast feed validator.",
+    "Search Pocket Casts, turn a show link into an RSS feed, and check a public feed.",
   keywords: [
     "podcast rss feed",
     "pocket casts rss",

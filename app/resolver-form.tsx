@@ -154,7 +154,7 @@ export default function ResolverForm() {
             )}
             <p className="result-meta">
               {sourceLabel[result.matchedBy]}{" "}
-              <a href={`/validator?url=${encodeURIComponent(result.feedUrl)}`}>Check this feed</a>
+              <a href={`/tools?url=${encodeURIComponent(result.feedUrl)}`}>Check this feed</a>
             </p>
           </div>
         </article>

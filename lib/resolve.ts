@@ -121,6 +121,12 @@ async function searchItunes(
   const outcome = pickDirectoryHit(hits, title, author);
 
   if (outcome.status === "match") return fromHit(outcome.hit, "itunes-search", platform);
+  if (outcome.status === "conflict") {
+    const listed = candidateLabel(outcome.hit);
+    throw new ResolveError(
+      `The publisher does not match. Apple Podcasts has "${listed}", not "${title}" by ${author ?? "the supplied publisher"}. Paste the Apple Podcasts link if that is the show you want.`
+    );
+  }
   if (outcome.status === "ambiguous") {
     throw new ResolveError(ambiguousMessage(title, outcome.candidates));
   }
@@ -309,8 +315,9 @@ async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<strin
       userAgent: USER_AGENT,
       accept: "application/rss+xml, application/xml, text/xml, text/html;q=0.5",
       timeoutMs: 8000,
-      maxBytes: 24_000,
-      maxUncompressedBytes: 128_000,
+      maxBytes: 1_000_000,
+      maxUncompressedBytes: 64_000,
+      allowPartial: true,
     });
     if (response.status < 200 || response.status >= 300) return undefined;
     const type = String(response.headers["content-type"] ?? "");

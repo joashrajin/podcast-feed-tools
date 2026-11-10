@@ -1,15 +1,62 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { rateLimit, retryAfterSeconds } from "./rate-limit";
 
-export function clientKey(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  const candidate = forwarded?.split(",")[0]?.trim() || req.headers.get("x-real-ip")?.trim() || "local";
-  return candidate.slice(0, 100);
+type HeaderBag = { get(name: string): string | null };
+
+/**
+ * Spacefast Functions run on Cloudflare. That network sets CF-Connecting-IP
+ * and does not let the caller choose it. The first X-Forwarded-For hop is
+ * whatever the client wrote, so it is not used. Local `next dev` has neither
+ * header and shares one bucket.
+ */
+export function clientKey(req: { headers: HeaderBag }): string {
+  const cf = req.headers.get("cf-connecting-ip")?.trim();
+  if (cf && isPlausibleIp(cf)) return cf.slice(0, 100);
+  return "local";
 }
 
-export async function readSubmittedUrl(req: NextRequest): Promise<string | NextResponse> {
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > 16_384) {
+function isPlausibleIp(value: string): boolean {
+  return /^[0-9a-f:.]+$/i.test(value) && value.length <= 64;
+}
+
+export async function readLimitedBytes(
+  stream: ReadableStream<Uint8Array> | null,
+  max: number
+): Promise<Uint8Array | "too-large"> {
+  if (!stream) return new Uint8Array();
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel();
+        return "too-large";
+      }
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return "too-large";
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+export async function readJsonObject(
+  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
+): Promise<Record<string, unknown> | NextResponse> {
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > 16_384) {
     return NextResponse.json({ error: "Request is too large." }, { status: 413 });
   }
 
@@ -24,9 +71,26 @@ export async function readSubmittedUrl(req: NextRequest): Promise<string | NextR
     );
   }
 
-  const body = await req.json().catch(() => null);
-  const url =
-    body && typeof body === "object" && "url" in body ? (body as { url?: unknown }).url : undefined;
+  const bytes = await readLimitedBytes(req.body, 16_384);
+  if (bytes === "too-large") {
+    return NextResponse.json({ error: "Request is too large." }, { status: 413 });
+  }
+  if (bytes.byteLength === 0) return {};
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+export async function readSubmittedUrl(
+  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
+): Promise<string | NextResponse> {
+  const body = await readJsonObject(req);
+  if (body instanceof NextResponse) return body;
+  const url = body.url;
   if (typeof url !== "string" || !url.trim()) {
     return NextResponse.json({ error: "Missing url." }, { status: 400 });
   }

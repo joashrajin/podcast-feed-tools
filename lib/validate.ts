@@ -1,20 +1,41 @@
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { USER_AGENT } from "./site";
-import type { Check, CheckLevel, ValidationReport } from "./types";
+import type { Check, CheckLevel, EnclosureKind, FeedSummary, ValidationReport } from "./types";
+import { describeCadence, durationSeconds, formatDuration } from "./feed-stats";
+import { imageSize } from "./image-size";
 import { FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
 
 export type { Check, CheckLevel, ValidationReport } from "./types";
 
 export class ValidateError extends Error {}
 
-type Episode = {
-  title?: unknown;
-  guid?: unknown;
-  enclosure?:
-    | { "@_url"?: string; "@_type"?: string; "@_length"?: string }
-    | { "@_url"?: string; "@_type"?: string; "@_length"?: string }[];
-  pubDate?: unknown;
-};
+const ITUNES_TAGS = [
+  "itunes:author",
+  "itunes:owner",
+  "itunes:image",
+  "itunes:category",
+  "itunes:explicit",
+  "itunes:type",
+  "itunes:complete",
+  "itunes:new-feed-url",
+  "itunes:block",
+  "itunes:subtitle",
+  "itunes:summary",
+];
+
+const PODCAST_TAGS = [
+  "podcast:guid",
+  "podcast:medium",
+  "podcast:locked",
+  "podcast:funding",
+  "podcast:txt",
+  "podcast:trailer",
+  "podcast:podroll",
+  "podcast:images",
+  "podcast:person",
+  "podcast:location",
+  "podcast:id",
+];
 
 function asArray<T>(value: T | T[] | undefined): T[] {
   if (value === undefined || value === null) return [];
@@ -26,6 +47,7 @@ function textOf(value: unknown): string | undefined {
     const trimmed = value.trim();
     return trimmed || undefined;
   }
+  if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (value && typeof value === "object" && "#text" in value) {
     return textOf((value as { "#text"?: unknown })["#text"]);
@@ -56,6 +78,51 @@ function failure(err: unknown): ValidateError {
   return new ValidateError("Couldn't reach the feed URL (timeout or network error).");
 }
 
+function categoriesOf(value: unknown, out: string[] = []): string[] {
+  for (const node of asArray(value as object | object[] | undefined)) {
+    if (!node || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    const text = textOf(record["@_text"]);
+    if (text) out.push(text);
+    if (record["itunes:category"]) categoriesOf(record["itunes:category"], out);
+  }
+  return out;
+}
+
+function ownerName(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return textOf(value);
+  const record = value as Record<string, unknown>;
+  return textOf(record["itunes:name"]) ?? textOf(record["#text"]);
+}
+
+function presentTags(channel: Record<string, unknown>, names: string[]): string[] {
+  return names.filter((name) => channel[name] !== undefined && channel[name] !== null && channel[name] !== "");
+}
+
+async function artworkDimensions(
+  href: string | undefined,
+  fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse>
+): Promise<string | undefined> {
+  if (!href || !href.startsWith("https://")) return undefined;
+  try {
+    const response = await fetchImpl(href, {
+      userAgent: USER_AGENT,
+      accept: "image/*",
+      timeoutMs: 8000,
+      maxBytes: 65_536,
+      maxUncompressedBytes: 65_536,
+      allowPartial: true,
+    });
+    if (response.status < 200 || response.status >= 300) return undefined;
+    const bytes = response.bytes;
+    if (!bytes) return undefined;
+    const size = imageSize(bytes);
+    return size ? `${size.width}×${size.height}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function validateFeed(
   feedUrl: string,
   fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch
@@ -70,7 +137,7 @@ export async function validateFeed(
       userAgent: USER_AGENT,
       accept: "application/rss+xml, application/xml, text/xml, */*",
       timeoutMs: 12_000,
-      maxBytes: 4_000_000,
+      maxBytes: 12_000_000,
       maxUncompressedBytes: 12_000_000,
     });
   } catch (err) {
@@ -115,22 +182,32 @@ export async function validateFeed(
   }
 
   const xml = response.body;
-  if (/<!doctype/i.test(xml.slice(0, 4000))) {
-    throw new ValidateError("The feed includes a DOCTYPE declaration. Podcast RSS should be a plain document without one.");
+  if (/<!doctype/i.test(xml)) {
+    throw new ValidateError(
+      "The feed includes a DOCTYPE declaration. Podcast RSS should be a plain document without one."
+    );
+  }
+
+  const validated = XMLValidator.validate(xml);
+  if (validated !== true) {
+    const line = validated.err?.line;
+    throw new ValidateError(
+      `The feed isn't valid XML${line ? ` (line ${line})` : ""}. A stray unescaped & or an unclosed tag is the usual cause.`
+    );
   }
 
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
-    processEntities: true,
+    parseTagValue: false,
+    parseAttributeValue: false,
+    trimValues: false,
   });
   let doc: Record<string, unknown>;
   try {
     doc = parser.parse(xml);
   } catch {
-    throw new ValidateError(
-      "The feed isn't valid XML. A stray unescaped & or an unclosed tag is the usual cause."
-    );
+    throw new ValidateError("The feed isn't valid XML. A stray unescaped & or an unclosed tag is the usual cause.");
   }
 
   const rss = doc.rss as Record<string, unknown> | undefined;
@@ -140,7 +217,17 @@ export async function validateFeed(
       "No <rss><channel> found. Podcast feeds have to be RSS 2.0. Most apps do not ingest Atom."
     );
   }
-  push("rss", "pass", "Valid RSS 2.0 structure", "<rss><channel> found");
+  const version = textOf(rss?.["@_version"]);
+  if (version === "2.0") {
+    push("rss", "pass", "Valid RSS 2.0", "<rss version=\"2.0\"><channel> found.");
+  } else {
+    push(
+      "rss",
+      "warn",
+      version ? `RSS version is ${version}` : "RSS version is not set",
+      "Podcast apps expect <rss version=\"2.0\">."
+    );
+  }
 
   const title = textOf(channel.title);
   if (title) push("title", "pass", "Channel has a title", title);
@@ -148,165 +235,151 @@ export async function validateFeed(
 
   const description = textOf(channel.description) ?? textOf(channel["itunes:summary"]);
   if (description) {
-    const preview = description.length > 120 ? `${description.slice(0, 120)}…` : description;
+    const preview = description.length > 160 ? `${description.slice(0, 160)}…` : description;
     push("description", "pass", "Channel has a description", preview);
   } else {
-    push(
-      "description",
-      "fail",
-      "Missing <description>",
-      "Required by Apple and shown on directory pages."
-    );
+    push("description", "fail", "Missing <description>", "Required by Apple and shown on directory pages.");
   }
 
   const language = textOf(channel.language);
   if (language) push("language", "pass", "Language is set", language);
   else {
-    push(
-      "language",
-      "warn",
-      "Missing <language>",
-      "Set an ISO 639 code such as en or en-us. Directories use it for regional discovery."
-    );
+    push("language", "warn", "Missing <language>", "Set an ISO 639 code such as en or en-us.");
   }
 
-  const image = channel["itunes:image"] as { "@_href"?: string } | undefined;
-  const imageHref = image?.["@_href"];
+  const author = textOf(channel["itunes:author"]) ?? ownerName(channel["itunes:owner"]);
+  const explicit = textOf(channel["itunes:explicit"]);
+  const categories = categoriesOf(channel["itunes:category"]);
+  const image = channel["itunes:image"] as { "@_href"?: string } | string | undefined;
+  const imageHref = typeof image === "string" ? image : image?.["@_href"];
+  const artworkSize = await artworkDimensions(imageHref, fetchImpl);
+
   if (imageHref) {
     const secure = imageHref.startsWith("https://");
     push(
       "artwork",
       secure ? "pass" : "warn",
       secure ? "Artwork URL present (HTTPS)" : "Artwork URL is not HTTPS",
-      `${imageHref} — square JPG or PNG, between 1400×1400 and 3000×3000.`
+      artworkSize ? `${imageHref} — ${artworkSize}.` : `${imageHref}. Size was not read from the file.`
     );
   } else {
-    push(
-      "artwork",
-      "fail",
-      "Missing <itunes:image>",
-      "Apple and most apps require show artwork (square, 1400–3000px)."
-    );
+    push("artwork", "fail", "Missing <itunes:image>", "Apple and most apps require square show artwork, 1400–3000px.");
   }
 
-  if (channel["itunes:category"]) push("category", "pass", "iTunes category set", "A category element is present.");
-  else {
-    push(
-      "category",
-      "warn",
-      "Missing <itunes:category>",
-      "Without a category the show is left out of directory browse sections."
-    );
-  }
+  if (categories.length) push("category", "pass", "iTunes category set", categories.join(" · "));
+  else push("category", "warn", "Missing <itunes:category>", "Without a category the show is left out of directory browse sections.");
 
-  const explicit = textOf(channel["itunes:explicit"]);
   if (explicit) push("explicit", "pass", "Explicit flag set", explicit);
-  else {
-    push(
-      "explicit",
-      "warn",
-      "Missing <itunes:explicit>",
-      "Apple requires an explicit rating on every feed."
-    );
-  }
+  else push("explicit", "warn", "Missing <itunes:explicit>", "Apple requires an explicit rating on every feed.");
 
-  if (channel["podcast:guid"]) {
-    push(
-      "podcast-guid",
-      "pass",
-      "Has <podcast:guid>",
-      "Podcasting 2.0 GUID present. Useful as a stable identity across directories."
-    );
+  const podcastTags = presentTags(channel, PODCAST_TAGS);
+  const itunesTags = presentTags(channel, ITUNES_TAGS);
+  if (podcastTags.includes("podcast:guid")) {
+    push("podcast-guid", "pass", "Has <podcast:guid>", "Podcasting 2.0 GUID present.");
   } else {
-    push(
-      "podcast-guid",
-      "info",
-      "No <podcast:guid>",
-      "Optional. A Podcasting 2.0 GUID gives the show a stable identity across apps and hosts."
-    );
+    push("podcast-guid", "info", "No <podcast:guid>", "Optional. A Podcasting 2.0 GUID is a stable identity across apps.");
   }
 
-  const items = asArray(channel.item as Episode | Episode[] | undefined);
-  if (items.length === 0) {
-    push("episodes", "fail", "No episodes found", "The feed has no <item> entries.");
-    return { feedUrl: response.url, podcastTitle: title, episodeCount: 0, checks };
-  }
-  push("episodes", "pass", `${items.length} episode(s) found`, "The channel has item entries.");
-
+  const items = asArray(channel.item as Record<string, unknown> | Record<string, unknown>[] | undefined);
+  const enclosureTypes = new Map<string, number>();
+  const durations: number[] = [];
+  const published: Date[] = [];
   const guids = new Map<string, number>();
   let missingEnclosure = 0;
   let insecureEnclosure = 0;
+  let badEnclosure = 0;
   let missingGuid = 0;
   let badDate = 0;
 
   for (const item of items) {
     const enclosure = Array.isArray(item.enclosure) ? item.enclosure[0] : item.enclosure;
-    const enc = enclosure?.["@_url"];
+    const enc = enclosure && typeof enclosure === "object" ? textOf((enclosure as { "@_url"?: unknown })["@_url"]) : undefined;
+    const encType = enclosure && typeof enclosure === "object"
+      ? textOf((enclosure as { "@_type"?: unknown })["@_type"])?.toLowerCase()
+      : undefined;
     if (!enc) missingEnclosure++;
+    else if (!/^https?:\/\//i.test(enc)) badEnclosure++;
     else if (enc.startsWith("http://")) insecureEnclosure++;
+    const typeKey = encType || (enc ? "unspecified" : "missing");
+    enclosureTypes.set(typeKey, (enclosureTypes.get(typeKey) ?? 0) + 1);
+
+    const seconds = durationSeconds(textOf(item["itunes:duration"]));
+    if (seconds !== undefined) durations.push(seconds);
 
     const guid = textOf(item.guid);
     if (!guid) missingGuid++;
     else guids.set(guid, (guids.get(guid) ?? 0) + 1);
 
     const pubDate = textOf(item.pubDate);
-    if (pubDate && Number.isNaN(Date.parse(pubDate))) badDate++;
+    if (pubDate) {
+      const parsed = new Date(pubDate);
+      if (Number.isNaN(parsed.getTime())) badDate++;
+      else published.push(parsed);
+    }
   }
 
+  if (items.length === 0) push("episodes", "fail", "No episodes found", "The feed has no <item> entries.");
+  else push("episodes", "pass", `${items.length} episode(s) found`, "The channel has item entries.");
+
   if (missingEnclosure) {
-    push(
-      "enclosures",
-      "fail",
-      `${missingEnclosure} episode(s) missing <enclosure>`,
-      "Episodes without an enclosure have no audio and will not play."
-    );
+    push("enclosures", "fail", `${missingEnclosure} episode(s) missing <enclosure>`, "Episodes without an enclosure have no audio and will not play.");
+  } else if (badEnclosure) {
+    push("enclosures", "fail", `${badEnclosure} enclosure URL(s) are not http(s)`, "The enclosure address has to be an http or https URL. The audio files were not downloaded.");
   } else {
-    push("enclosures", "pass", "Every episode has an audio enclosure", "Each item has an enclosure URL.");
+    push("enclosures", "pass", "Every episode has an http(s) enclosure", "Presence only. The audio files were not downloaded.");
   }
 
   if (insecureEnclosure) {
-    push(
-      "enclosure-https",
-      "warn",
-      `${insecureEnclosure} enclosure(s) served over HTTP`,
-      "Move audio to HTTPS. Some clients refuse insecure media."
-    );
+    push("enclosure-https", "warn", `${insecureEnclosure} enclosure(s) served over HTTP`, "Move audio to HTTPS. Some clients refuse insecure media.");
   }
 
   const dupes = [...guids.entries()].filter(([, count]) => count > 1);
   if (missingGuid) {
-    push(
-      "guids",
-      "fail",
-      `${missingGuid} episode(s) missing <guid>`,
-      "Apps use GUIDs to track played state. Missing GUIDs cause duplicate or re-downloaded episodes."
-    );
+    push("guids", "fail", `${missingGuid} episode(s) missing <guid>`, "Apps use GUIDs to track played state.");
   } else if (dupes.length) {
-    push(
-      "guids",
-      "fail",
-      `${dupes.length} duplicate GUID(s)`,
-      `"${dupes[0][0]}" appears ${dupes[0][1]} times. Duplicate GUIDs make apps hide or merge episodes.`
-    );
-  } else {
-    push("guids", "pass", "GUIDs present and unique on every episode", "No missing or repeated GUIDs.");
+    push("guids", "fail", `${dupes.length} duplicate GUID(s)`, `"${dupes[0][0]}" appears ${dupes[0][1]} times.`);
+  } else if (items.length) {
+    push("guids", "pass", "GUIDs present and unique", "Values are compared as text, so 001 and 1 stay distinct.");
   }
 
   if (badDate) {
-    push(
-      "dates",
-      "warn",
-      `${badDate} episode(s) with unparseable <pubDate>`,
-      "Use RFC 822 dates, for example Tue, 08 Jul 2026 09:00:00 GMT. Bad dates break episode ordering."
-    );
-  } else {
-    push("dates", "pass", "All publish dates parse correctly", "Every pubDate that is present parses as a date.");
+    push("dates", "warn", `${badDate} episode(s) with unparseable <pubDate>`, "Use RFC 822 dates, for example Tue, 08 Jul 2026 09:00:00 GMT.");
+  } else if (items.length) {
+    push("dates", "pass", "Publish dates parse", "Every pubDate that is present parses as a date.");
   }
+
+  const last = published.sort((a, b) => b.getTime() - a.getTime())[0];
+  const totalSeconds = durations.reduce((sum, value) => sum + value, 0);
+  const enclosureList: EnclosureKind[] = [...enclosureTypes.entries()]
+    .filter(([type]) => type !== "missing")
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const summary: FeedSummary = {
+    title,
+    author,
+    description: description ? (description.length > 280 ? `${description.slice(0, 280)}…` : description) : undefined,
+    language,
+    explicit,
+    categories,
+    artworkUrl: imageHref,
+    artworkSize,
+    lastPublished: last ? last.toISOString() : textOf(channel.lastBuildDate),
+    cadence: describeCadence(published),
+    episodeCount: items.length,
+    episodesWithDuration: durations.length,
+    averageDuration: durations.length ? formatDuration(totalSeconds / durations.length) : undefined,
+    totalDuration: durations.length ? formatDuration(totalSeconds) : undefined,
+    enclosureTypes: enclosureList,
+    itunesTags,
+    podcastTags,
+  };
 
   return {
     feedUrl: response.url,
     podcastTitle: title,
     episodeCount: items.length,
+    summary,
     checks,
   };
 }

@@ -1,9 +1,20 @@
-import http from "node:http";
-import https from "node:https";
-import { lookup as dnsLookup } from "node:dns";
-import { lookup as dnsLookupAsync } from "node:dns/promises";
-import { BlockList, isIP, type LookupFunction } from "node:net";
-import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
+import { BlockList, isIP } from "node:net";
+
+/**
+ * Outbound HTTP for both Node and Spacefast Functions.
+ *
+ * Spacefast Functions are an OpenNext worker. The documented outbound API is
+ * the standard fetch(), which reaches public HTTP(S) hosts on a claimed space
+ * (https://spacefast.com/docs/functions/). That runtime does not implement
+ * node:dns lookup, and node:http's custom lookup option is not honored, so
+ * this module does not use either. Private literal addresses are refused here
+ * before fetch. A redirect target is checked the same way. Connect-time
+ * blocking of public names that rebind to a private address is the worker
+ * fetch itself: Spacefast describes it as reaching public hosts, which is
+ * Cloudflare's fetch, and that fetch refuses private networks. A live
+ * Functions isolate was not booted in this environment; tests cover the
+ * fetch() path with a stub and one public request.
+ */
 
 export class FetchError extends Error {
   constructor(
@@ -66,7 +77,7 @@ function ipv4FromHextets(high: string, low: string): string | undefined {
   return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
 }
 
-function bareHost(hostname: string): string {
+export function bareHost(hostname: string): string {
   let host = hostname.trim().toLowerCase().replace(/\.$/, "");
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
   return host;
@@ -124,7 +135,6 @@ export function assertPublicHttpUrl(raw: string, allowedHosts?: readonly string[
     throw new FetchError("Only http and https URLs are accepted.", "invalid-url");
   }
 
-  // Node's URL.hostname keeps the brackets on IPv6 literals, and isIP() rejects that form.
   const host = bareHost(url.hostname);
   if (!host || BLOCKED_HOSTS.has(host) || BLOCKED_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
     throw new FetchError("That address isn't public.", "blocked");
@@ -149,181 +159,282 @@ export function asHttpsUrl(raw: string | undefined): string | undefined {
   }
 }
 
-async function assertResolvedPublic(hostname: string): Promise<void> {
-  if (isIP(hostname) !== 0) return;
-  let records: { address: string }[];
-  try {
-    records = await dnsLookupAsync(hostname, { all: true, verbatim: true });
-  } catch {
-    throw new FetchError("Couldn't resolve that host.", "network");
+async function assertResolvedPublic(hostname: string, deadline: AbortSignal): Promise<void> {
+  const host = bareHost(hostname);
+  if (isIP(host) !== 0) {
+    if (isBlockedIp(host)) throw new FetchError("That address isn't public.", "blocked");
+    return;
   }
-  if (records.length === 0 || records.some((record) => isBlockedIp(record.address))) {
-    throw new FetchError("That address isn't public.", "blocked");
+  if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+
+  let lookup: typeof import("node:dns/promises").lookup;
+  try {
+    lookup = (await import("node:dns/promises")).lookup;
+  } catch {
+    return;
+  }
+
+  try {
+    const records = await lookup(host, { all: true, verbatim: true });
+    if (records.length === 0 || records.some((record) => isBlockedIp(record.address))) {
+      throw new FetchError("That address isn't public.", "blocked");
+    }
+  } catch (err) {
+    if (err instanceof FetchError) throw err;
+    if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+    const code = (err as { code?: string }).code;
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ENODATA") {
+      throw new FetchError("Couldn't resolve that host.", "network");
+    }
+    // Workers-style runtimes expose a stub that cannot resolve. fetch() still
+    // refuses private destinations, so a missing DNS implementation is not a
+    // failed lookup of a real name.
   }
 }
-
-const guardedLookup: LookupFunction = (hostname, options, callback) => {
-  dnsLookup(hostname, options, (err, address, family) => {
-    if (err) {
-      callback(err, "", 4);
-      return;
-    }
-    const addresses = Array.isArray(address) ? address.map((entry) => entry.address) : [address];
-    if (addresses.some((item) => isBlockedIp(item))) {
-      callback(Object.assign(new Error("blocked address"), { code: "ECONNREFUSED" }), "", 4);
-      return;
-    }
-    if (Array.isArray(address)) callback(null, address);
-    else callback(null, address, family);
-  });
-};
 
 export type SafeResponse = {
   url: string;
   status: number;
-  headers: http.IncomingHttpHeaders;
+  headers: Record<string, string>;
   body: string;
+  bytes?: Uint8Array;
+  truncated?: boolean;
 };
+
+export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 export type SafeFetchOptions = {
   userAgent: string;
   accept?: string;
   timeoutMs?: number;
+  /** Decoded body cap. Past this, the read stops. */
   maxBytes?: number;
   maxUncompressedBytes?: number;
   maxRedirects?: number;
   allowedHosts?: readonly string[];
-  /** Stop before requesting a URL that already has what the caller needs. */
+  method?: "GET" | "POST";
+  body?: string;
+  headers?: Record<string, string>;
+  /** Keep a prefix instead of failing when the body exceeds maxBytes. */
+  allowPartial?: boolean;
   haltWhen?: (url: URL) => boolean;
+  fetchImpl?: FetchLike;
 };
 
-function headerValue(headers: http.IncomingHttpHeaders, name: string): string | undefined {
-  const value = headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0];
-  return value;
+function headerRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value;
+  });
+  return out;
 }
 
-function decodeBody(buffer: Buffer, encoding: string | undefined): Buffer {
-  const enc = (encoding ?? "").toLowerCase();
-  try {
-    if (enc.includes("br")) return brotliDecompressSync(buffer);
-    if (enc.includes("gzip") || enc.includes("x-gzip")) return gunzipSync(buffer);
-    if (enc.includes("deflate")) return inflateSync(buffer);
-  } catch {
-    throw new FetchError("The response could not be decoded.", "network");
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
   }
-  return buffer;
+  return out;
 }
 
-function requestOnce(url: URL, options: SafeFetchOptions): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
-  const timeoutMs = options.timeoutMs ?? 10_000;
-  const maxBytes = options.maxBytes ?? 1_000_000;
-  const lib = url.protocol === "https:" ? https : http;
+async function readPlain(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  max: number,
+  signal: AbortSignal
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      if (signal.aborted) throw new FetchError("The request timed out.", "timeout");
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (total + value.byteLength > max) {
+        const room = max - total;
+        if (room > 0) chunks.push(value.subarray(0, room));
+        await reader.cancel();
+        return { bytes: concat(chunks), truncated: true };
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } catch (err) {
+    if (err instanceof FetchError) throw err;
+    if (signal.aborted) throw new FetchError("The request timed out.", "timeout");
+    throw new FetchError("The connection failed.", "network");
+  }
+  return { bytes: concat(chunks), truncated: false };
+}
 
-  return new Promise((resolve, reject) => {
+async function inflateCapped(
+  input: Uint8Array,
+  encoding: string,
+  max: number
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  const zlib = await import("node:zlib");
+  const stream = encoding.includes("br")
+    ? zlib.createBrotliDecompress()
+    : encoding.includes("deflate")
+      ? zlib.createInflate()
+      : zlib.createGunzip();
+
+  return await new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
     let settled = false;
-    const finish = (error?: Error, value?: { status: number; headers: http.IncomingHttpHeaders; body: Buffer }) => {
+    const finish = (error?: Error, value?: { bytes: Uint8Array; truncated: boolean }) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
       if (error) reject(error);
       else resolve(value!);
     };
-
-    const req = lib.request(
-      {
-        protocol: url.protocol,
-        hostname: bareHost(url.hostname),
-        port: url.port || undefined,
-        path: `${url.pathname}${url.search}`,
-        method: "GET",
-        headers: {
-          accept: options.accept ?? "*/*",
-          "accept-encoding": "gzip, deflate, br",
-          "user-agent": options.userAgent,
-        },
-        lookup: guardedLookup,
-        servername: bareHost(url.hostname),
-      },
-      (res) => {
-        const declared = Number(headerValue(res.headers, "content-length") ?? 0);
-        if (Number.isFinite(declared) && declared > maxBytes) {
-          res.destroy();
-          finish(new FetchError("The response is too large.", "too-large"));
-          return;
-        }
-        const chunks: Buffer[] = [];
-        let total = 0;
-        res.on("data", (chunk: Buffer) => {
-          total += chunk.length;
-          if (total > maxBytes) {
-            res.destroy();
-            finish(new FetchError("The response is too large.", "too-large"));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on("end", () => {
-          finish(undefined, {
-            status: res.statusCode ?? 0,
-            headers: res.headers,
-            body: Buffer.concat(chunks),
-          });
-        });
-        res.on("error", () => finish(new FetchError("The connection failed.", "network")));
-      }
-    );
-
-    const timer = setTimeout(() => {
-      req.destroy();
-      finish(new FetchError("The request timed out.", "timeout"));
-    }, timeoutMs);
-
-    req.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.message === "blocked address") {
-        finish(new FetchError("That address isn't public.", "blocked"));
+    stream.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      if (total >= max) {
+        stream.destroy();
+        finish(undefined, { bytes: concat(chunks), truncated: true });
         return;
       }
-      finish(new FetchError("The connection failed.", "network"));
+      if (total + chunk.length > max) {
+        chunks.push(chunk.subarray(0, max - total));
+        total = max;
+        stream.destroy();
+        finish(undefined, { bytes: concat(chunks), truncated: true });
+        return;
+      }
+      chunks.push(chunk);
+      total += chunk.length;
     });
-    req.end();
+    stream.on("end", () => finish(undefined, { bytes: concat(chunks), truncated: false }));
+    stream.on("error", () => {
+      if (!settled) finish(new FetchError("The response could not be decoded.", "network"));
+    });
+    stream.end(Buffer.from(input));
   });
 }
 
+function prepend(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  first: Uint8Array
+): ReadableStreamDefaultReader<Uint8Array> {
+  let pending: Uint8Array | null = first;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (pending) {
+        controller.enqueue(pending);
+        pending = null;
+        return;
+      }
+      const next = await reader.read();
+      if (next.done) controller.close();
+      else if (next.value) controller.enqueue(next.value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return stream.getReader();
+}
+
+async function readDecoded(
+  response: Response,
+  maxDecoded: number,
+  signal: AbortSignal
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { bytes: new Uint8Array(), truncated: false };
+  const encoding = (response.headers.get("content-encoding") ?? "").toLowerCase();
+  const rawPreview = await reader.read();
+  if (rawPreview.done || !rawPreview.value) {
+    return { bytes: rawPreview.value ?? new Uint8Array(), truncated: false };
+  }
+  const first = rawPreview.value;
+  const compressed =
+    (first.length >= 2 && first[0] === 0x1f && first[1] === 0x8b) ||
+    (/br|deflate/.test(encoding) && first[0] !== 0x7b && first[0] !== 0x3c && first[0] !== 0xef);
+  const prefixReader = prepend(reader, first);
+  if (!compressed) return readPlain(prefixReader, maxDecoded, signal);
+
+  // Cap the compressed input too, then inflate with an output cap so a small
+  // bomb cannot expand without bound.
+  const wireCap = Math.min(Math.max(maxDecoded, 65_536), 8_000_000);
+  const raw = await readPlain(prefixReader, wireCap, signal);
+  try {
+    const inflated = await inflateCapped(raw.bytes, encoding, maxDecoded);
+    return { bytes: inflated.bytes, truncated: raw.truncated || inflated.truncated };
+  } catch (err) {
+    if (err instanceof FetchError) throw err;
+    throw new FetchError("The response could not be decoded.", "network");
+  }
+}
+
 export async function safeFetch(input: string, options: SafeFetchOptions): Promise<SafeResponse> {
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const maxDecoded = options.maxUncompressedBytes ?? options.maxBytes ?? 1_000_000;
+  const allowPartial = options.allowPartial ?? false;
   const maxRedirects = options.maxRedirects ?? 5;
+  const fetchImpl = options.fetchImpl ?? fetch;
+
   let current = assertPublicHttpUrl(input, options.allowedHosts);
   if (options.haltWhen?.(current)) {
-    return { url: current.toString(), status: 200, headers: {}, body: "" };
+    return { url: current.toString(), status: 200, headers: {}, body: "", bytes: new Uint8Array(), truncated: false };
   }
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
-    await assertResolvedPublic(current.hostname);
-    const response = await requestOnce(current, options);
-    const location = headerValue(response.headers, "location");
+    if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+    await assertResolvedPublic(current.hostname, deadline);
+
+    let response: Response;
+    try {
+      response = await fetchImpl(current.toString(), {
+        method: options.method ?? "GET",
+        redirect: "manual",
+        signal: deadline,
+        headers: {
+          accept: options.accept ?? "*/*",
+          "user-agent": options.userAgent,
+          ...(options.body ? { "content-type": "application/json" } : {}),
+          ...options.headers,
+        },
+        body: options.body,
+      });
+    } catch (err) {
+      if (deadline.aborted || (err instanceof Error && err.name === "AbortError")) {
+        throw new FetchError("The request timed out.", "timeout");
+      }
+      throw new FetchError("The connection failed.", "network");
+    }
+
+    const headers = headerRecord(response.headers);
+    const location = headers.location;
     const redirect = [301, 302, 303, 307, 308].includes(response.status);
     if (redirect && location) {
-      if (hop === maxRedirects) {
-        throw new FetchError("Too many redirects.", "too-many-redirects");
-      }
+      await response.body?.cancel();
+      if (hop === maxRedirects) throw new FetchError("Too many redirects.", "too-many-redirects");
       const next = assertPublicHttpUrl(new URL(location, current).toString(), options.allowedHosts);
       if (options.haltWhen?.(next)) {
-        return { url: next.toString(), status: response.status, headers: response.headers, body: "" };
+        return { url: next.toString(), status: response.status, headers, body: "", bytes: new Uint8Array(), truncated: false };
       }
       current = next;
       continue;
     }
 
-    const uncompressedLimit = options.maxUncompressedBytes ?? options.maxBytes ?? 1_000_000;
-    const decoded = decodeBody(response.body, headerValue(response.headers, "content-encoding"));
-    if (decoded.length > uncompressedLimit) {
+    const decoded = await readDecoded(response, maxDecoded, deadline);
+    if (decoded.truncated && !allowPartial) {
       throw new FetchError("The response is too large.", "too-large");
     }
     return {
       url: current.toString(),
       status: response.status,
-      headers: response.headers,
-      body: decoded.toString("utf8"),
+      headers,
+      body: new TextDecoder().decode(decoded.bytes),
+      bytes: decoded.bytes,
+      truncated: decoded.truncated,
     };
   }
 

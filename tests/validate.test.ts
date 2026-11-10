@@ -65,10 +65,35 @@ describe("validateFeed", () => {
     assert.equal(bad.checks.find((check) => check.id === "guids")?.level, "fail");
   });
 
-  it("rejects a doctype before parsing", async () => {
+  it("rejects a doctype anywhere in the document", async () => {
+    const padded = `${"<!-- x -->".repeat(800)}<!DOCTYPE rss [<!ENTITY a "b">]>`;
     await assert.rejects(
-      () => validateFeed("https://example.com/feed.xml", feedFetch(`<!DOCTYPE rss [<!ENTITY a "b">]>${base}`)),
+      () => validateFeed("https://example.com/feed.xml", feedFetch(base.replace("<description>", `<description>${padded}`))),
       /DOCTYPE/
     );
+  });
+
+  it("rejects malformed XML and a missing RSS version is only a warning when the document is otherwise RSS", async () => {
+    await assert.rejects(
+      () => validateFeed("https://example.com/feed.xml", feedFetch(`<rss version="2.0"><channel><title>Nope</title>`)),
+      /valid XML/
+    );
+  });
+
+  it("keeps an explicit false and does not collapse textual GUIDs", async () => {
+    const report = await validateFeed("https://example.com/feed.xml", feedFetch(base));
+    assert.equal(report.summary.explicit, "false");
+    assert.equal(report.checks.find((check) => check.id === "explicit")?.level, "pass");
+
+    const two = base.replace(
+      "</channel>",
+      `<item><title>Two</title><guid>001</guid><enclosure url="https://example.com/two.mp3" type="audio/mpeg"/></item>
+       <item><title>Three</title><guid>1</guid><enclosure url="https://example.com/three.mp3" type="audio/mpeg"/></item>
+       </channel>`
+    );
+    const guids = await validateFeed("https://example.com/feed.xml", feedFetch(two));
+    assert.equal(guids.checks.find((check) => check.id === "guids")?.level, "pass");
+    assert.equal(guids.summary.episodeCount, 3);
+    assert.deepEqual(guids.summary.enclosureTypes, [{ type: "audio/mpeg", count: 3 }]);
   });
 });

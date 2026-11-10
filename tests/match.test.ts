@@ -20,7 +20,8 @@ describe("pickDirectoryHit", () => {
   it("normalizes punctuation and accents", () => {
     assert.equal(normalizeName("Science Vs."), "science vs");
     assert.equal(normalizeName("Conán O'Brien"), "conan o brien");
-    assert.equal(normalizeName("99% Invisible"), normalizeName("99 Invisible"));
+    assert.equal(normalizeName("中文播客"), "中文播客");
+    assert.equal(normalizeName("Наука"), "наука");
   });
 
   it("matches an exact title and ignores a higher-ranked different show", () => {
@@ -52,5 +53,19 @@ describe("pickDirectoryHit", () => {
   it("treats the same feed listed twice as one match", () => {
     const outcome = pickDirectoryHit([daily, { ...daily, itunesId: 9 }], "the daily");
     assert.equal(outcome.status, "match");
+  });
+
+  it("does not match a single title when the publisher conflicts", () => {
+    const outcome = pickDirectoryHit([daily], "The Daily", "Someone Else");
+    assert.equal(outcome.status, "conflict");
+  });
+
+  it("does not match a shared feed when every publisher conflicts", () => {
+    const outcome = pickDirectoryHit(
+      [daily, { ...daily, itunesId: 9 }],
+      "The Daily",
+      "Someone Else"
+    );
+    assert.equal(outcome.status, "conflict");
   });
 });
