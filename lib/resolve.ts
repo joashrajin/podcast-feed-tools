@@ -192,15 +192,12 @@ async function spotifyShowMeta(
       accept: "text/html",
       allowedHosts: ["open.spotify.com"],
       timeoutMs: 8000,
-      // The show page inlines a long list of country tags. The title is near the top,
-      // but the response is gzipped, so the compressed body has to be read whole.
-      maxBytes: 500_000,
+      // The og: tags are in the head. The body after them can grow without
+      // limit (country lists, episode data), so a cut-off page is still usable.
       maxUncompressedBytes: 800_000,
+      allowPartial: true,
     });
   } catch (err) {
-    if (err instanceof FetchError && err.code === "too-large") {
-      throw new ResolveError("Spotify's page was too large to read the show name from.");
-    }
     throw upstreamError(err, "Spotify didn't respond for that show. Check that the link is public.");
   }
   if (response.status < 200 || response.status >= 300) {
@@ -280,21 +277,48 @@ type Catalog = {
   isPrivate: boolean;
 };
 
-async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
+// Two front doors to the same catalog. The second is tried only when the first
+// is down, not when it says the show doesn't exist.
+const CATALOG_ENDPOINTS = [
+  "https://podcast-api.pocketcasts.com/podcast/full/",
+  "https://cache.pocketcasts.com/mobile/podcast/full/",
+] as const;
+
+async function fetchCatalog(uuid: string, deps: ResolverDeps): Promise<SafeResponse> {
   const fetch = fetchWith(deps);
-  let response: SafeResponse;
-  try {
-    response = await fetch(`https://podcast-api.pocketcasts.com/podcast/full/${uuid}`, {
-      userAgent: USER_AGENT,
-      accept: "application/json",
-      allowedHosts: POCKETCASTS_API,
-      timeoutMs: 8000,
-      maxBytes: 2_000_000,
-      maxUncompressedBytes: 6_000_000,
-    });
-  } catch (err) {
-    throw upstreamError(err, "Pocket Casts didn't respond for that show.");
+  let failure = new ResolveError("Pocket Casts didn't respond for that show. Try again in a moment.");
+  for (const endpoint of CATALOG_ENDPOINTS) {
+    let response: SafeResponse;
+    try {
+      response = await fetch(`${endpoint}${uuid}`, {
+        userAgent: USER_AGENT,
+        accept: "application/json",
+        allowedHosts: POCKETCASTS_API,
+        timeoutMs: 8000,
+        maxUncompressedBytes: 6_000_000,
+      });
+    } catch (err) {
+      if (err instanceof FetchError && err.code === "too-large") {
+        throw new ResolveError("Pocket Casts' listing for that show is too large to read.");
+      }
+      continue;
+    }
+    if (response.status === 404) {
+      throw new ResolveError(
+        "Pocket Casts has no show with that id. Check that the link is to a public show or episode."
+      );
+    }
+    if (response.status >= 500 || response.status === 429) {
+      failure = new ResolveError("Pocket Casts' catalog is having trouble. Try again in a moment.");
+      continue;
+    }
+    return response;
   }
+  throw failure;
+}
+
+async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
+  const response = await fetchCatalog(uuid, deps);
   const data = await readJson(response, "Pocket Casts returned something that couldn't be read.");
   const podcast = (data as { podcast?: Record<string, unknown> }).podcast ?? (data as Record<string, unknown>);
   const title = typeof podcast.title === "string" ? podcast.title.trim() : undefined;
@@ -322,7 +346,9 @@ async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<strin
     if (response.status < 200 || response.status >= 300) return undefined;
     const type = String(response.headers["content-type"] ?? "");
     if (!looksLikeFeed(type, response.body)) return undefined;
-    return publicFeedUrl(response.url);
+    // Report where the feed lives, not a signed or expiring address it was
+    // temporarily redirected to. Permanent moves are followed.
+    return publicFeedUrl(response.permanentUrl ?? candidate);
   } catch {
     return undefined;
   }
@@ -341,8 +367,11 @@ async function resolvePocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Re
         accept: "text/html",
         allowedHosts: POCKETCASTS_WEB,
         timeoutMs: 8000,
-        maxBytes: 48_000,
+        // Only og:url in the head is read, so a cut-off page is fine.
         maxUncompressedBytes: 200_000,
+        allowPartial: true,
+        // Stops at the first address that names the show. An episode share
+        // link redirects to /podcast/<slug>/<show>/<episode-slug>/<episode>.
         haltWhen: (url) => Boolean(pocketCastsUuid(url)),
       });
     } catch (err) {

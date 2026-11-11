@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Spacefast deploy output and state. Generated, never committed.
+    ".open-next/**",
+    ".spacefast/**",
   ]),
 ]);
 

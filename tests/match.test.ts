@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { normalizeName, pickDirectoryHit, type DirectoryHit } from "../lib/match";
+import { normalizeName, pickDirectoryHit, samePublisher, type DirectoryHit } from "../lib/match";
 
 const daily: DirectoryHit = {
   title: "The Daily",
@@ -67,5 +67,29 @@ describe("pickDirectoryHit", () => {
       "Someone Else"
     );
     assert.equal(outcome.status, "conflict");
+  });
+
+  it("matches a single title when the publisher is worded differently", () => {
+    assert.equal(pickDirectoryHit([daily], "The Daily", "NYT").status, "match");
+    assert.equal(pickDirectoryHit([daily], "The Daily", "New York Times").status, "match");
+    const morbid: DirectoryHit = { ...daily, title: "Morbid", author: "Morbid Network | Wondery" };
+    assert.equal(pickDirectoryHit([morbid], "Morbid", "Wondery | Morbid Network").status, "match");
+  });
+
+  it("compares publisher names by distinctive words and acronyms", () => {
+    assert.equal(samePublisher("iHeartPodcasts", "iHeart Podcasts"), true);
+    assert.equal(samePublisher("BBC Radio 4", "BBC"), true);
+    assert.equal(samePublisher("NPR", "National Public Radio"), true);
+    assert.equal(samePublisher("Vox Media Podcast Network", "Vox"), true);
+    assert.equal(samePublisher("The New York Times", "Someone Else"), false);
+    assert.equal(samePublisher("Fox", "The Ringer"), false);
+    assert.equal(samePublisher("NPR", "The Ringer"), false);
+  });
+
+  it("prefers an exact publisher over a loosely matching one", () => {
+    const one: DirectoryHit = { ...daily, author: "The New York Times One", feedUrl: "https://example.com/one.xml", itunesId: 7 };
+    const outcome = pickDirectoryHit([one, daily], "The Daily", "The New York Times");
+    assert.equal(outcome.status, "match");
+    if (outcome.status === "match") assert.equal(outcome.hit.itunesId, 1200361736);
   });
 });

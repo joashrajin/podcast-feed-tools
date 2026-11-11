@@ -213,4 +213,76 @@ describe("resolveShowUrl", () => {
     );
     assert.equal(calls.length, 1);
   });
+
+  it("follows a Pocket Casts episode share link to its show", async () => {
+    const show = "4eb5b260-c933-0134-10da-25324e2a541d";
+    const episode = "1d9d0634-f27a-4b93-b83f-8a300f943c61";
+    const { fetch, calls } = scripted([
+      (url) =>
+        url === `https://pca.st/episode/${episode}`
+          ? { url: `https://pocketcasts.com/podcast/the-daily/${show}/secrets-chips/${episode}`, status: 302, headers: {}, body: "" }
+          : undefined,
+      (url) =>
+        url === `https://podcast-api.pocketcasts.com/podcast/full/${show}`
+          ? ok(url, JSON.stringify({ podcast: { title: "The Daily", author: "The New York Times", url: "https://www.nytimes.com/the-daily" } }), "application/json")
+          : undefined,
+      (url) => (url.startsWith("https://www.nytimes.com/") ? ok(url, "<!doctype html><html></html>", "text/html") : undefined),
+      (url) =>
+        url.startsWith("https://itunes.apple.com/search")
+          ? ok(url, JSON.stringify({
+              results: [{ collectionName: "The Daily", artistName: "The New York Times", feedUrl: "https://feeds.simplecast.com/Sl5CSM3S", collectionId: 1200361736 }],
+            }), "application/json")
+          : undefined,
+    ]);
+    const result = await resolveShowUrl(`https://pca.st/episode/${episode}`, { fetch });
+    assert.equal(result.feedUrl, "https://feeds.simplecast.com/Sl5CSM3S");
+    assert.equal(calls.some((url) => url.includes(`/podcast/full/${episode}`)), false);
+  });
+
+  it("tries the second catalog host when the first is down", async () => {
+    const show = "3782b780-0bc5-012e-fb02-00163e1b201c";
+    const { fetch, calls } = scripted([
+      (url) => (url.includes("podcast-api.pocketcasts.com") ? { url, status: 503, headers: {}, body: "" } : undefined),
+      (url) =>
+        url === `https://cache.pocketcasts.com/mobile/podcast/full/${show}`
+          ? ok(url, JSON.stringify({ podcast: { title: "This American Life", author: "This American Life", url: "https://www.thisamericanlife.org/podcast/rss.xml" } }), "application/json")
+          : undefined,
+      (url) =>
+        url.startsWith("https://www.thisamericanlife.org/")
+          ? ok(url, "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel></channel></rss>", "application/rss+xml")
+          : undefined,
+    ]);
+    const result = await resolveShowUrl(`https://pocketcasts.com/podcast/this-american-life/${show}`, { fetch });
+    assert.equal(result.feedUrl, "https://www.thisamericanlife.org/podcast/rss.xml");
+    assert.equal(calls.filter((url) => url.includes("/podcast/full/")).length, 2);
+  });
+
+  it("says when Pocket Casts has no show with that id, without retrying", async () => {
+    const { fetch, calls } = scripted([
+      (url) => (url.includes("pocketcasts.com/") ? { url, status: 404, headers: {}, body: "" } : undefined),
+    ]);
+    await assert.rejects(
+      () => resolveShowUrl("https://pocketcasts.com/podcast/gone/3782b780-0bc5-012e-fb02-00163e1b201c", { fetch }),
+      (err: unknown) => err instanceof ResolveError && /no show with that id/.test(err.message)
+    );
+    assert.equal(calls.length, 1);
+  });
+
+  it("reports the catalog's feed address, not a signed address it redirects to", async () => {
+    const { fetch } = scripted([
+      (url) =>
+        url.includes("podcast-api.pocketcasts.com")
+          ? ok(url, JSON.stringify({ podcast: { title: "Desk", author: "Desk", url: "https://example.com/feed.xml" } }), "application/json")
+          : undefined,
+      (url) =>
+        url === "https://example.com/feed.xml"
+          ? {
+              ...ok("https://cdn.example.com/feed.xml?Expires=1&Signature=abc", "<rss version=\"2.0\"><channel></channel></rss>", "application/rss+xml"),
+              permanentUrl: "https://example.com/feed.xml",
+            }
+          : undefined,
+    ]);
+    const result = await resolveShowUrl("https://pocketcasts.com/podcast/desk/3782b780-0bc5-012e-fb02-00163e1b201c", { fetch });
+    assert.equal(result.feedUrl, "https://example.com/feed.xml");
+  });
 });

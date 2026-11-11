@@ -232,4 +232,48 @@ describe("safeFetch transport", () => {
     );
     assert.ok(Date.now() - started < 1000);
   });
+
+  it("follows a 303 after a POST with a GET", async () => {
+    const methods: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      methods.push(String(init.method));
+      if (url.endsWith("/search")) {
+        return new Response(null, { status: 303, headers: { location: "https://example.com/results" } });
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const result = await safeFetch("https://example.com/search", {
+      userAgent: "test",
+      fetchImpl,
+      timeoutMs: 2000,
+      method: "POST",
+      body: "{}",
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(methods, ["POST", "GET"]);
+  });
+
+  it("returns a fetch error for a redirect to a malformed address", async () => {
+    const fetchImpl: FetchLike = async () =>
+      new Response(null, { status: 302, headers: { location: "https://[bad" } });
+    await assert.rejects(
+      () => safeFetch("https://example.com/feed.xml", { userAgent: "test", fetchImpl, timeoutMs: 2000 }),
+      (err: unknown) => err instanceof FetchError && err.code === "bad-redirect"
+    );
+  });
+
+  it("keeps the permanent address only through 301 and 308 redirects", async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.endsWith("/old")) return new Response(null, { status: 301, headers: { location: "https://example.com/feed" } });
+      if (url.endsWith("/feed")) return new Response(null, { status: 302, headers: { location: "https://example.com/signed?token=abc" } });
+      return new Response("<rss/>", { status: 200 });
+    };
+    const moved = await safeFetch("https://example.com/old", { userAgent: "test", fetchImpl, timeoutMs: 2000 });
+    assert.equal(moved.url, "https://example.com/signed?token=abc");
+    assert.equal(moved.permanentUrl, "https://example.com/feed");
+
+    const temporary = await safeFetch("https://example.com/feed", { userAgent: "test", fetchImpl, timeoutMs: 2000 });
+    assert.equal(temporary.permanentUrl, "https://example.com/feed");
+    assert.equal(temporary.url, "https://example.com/signed?token=abc");
+  });
 });

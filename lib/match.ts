@@ -24,13 +24,46 @@ export function normalizeName(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+// Words that say what kind of publisher it is, not which one.
+const FILLER = new Set([
+  "a", "an", "and", "by", "co", "company", "entertainment", "group", "inc", "llc",
+  "ltd", "media", "network", "networks", "of", "official", "podcast", "podcasts",
+  "presents", "production", "productions", "studio", "studios", "the",
+]);
+
+function significantWords(normalized: string): string[] {
+  return normalized.split(" ").filter((word) => word && !FILLER.has(word));
+}
+
+/**
+ * Directories word the same publisher differently: "Wondery | Morbid Network"
+ * against "Morbid Network | Wondery", "NYT" against "The New York Times",
+ * "iHeartPodcasts" against "iHeart Podcasts". Names count as the same when
+ * they share a distinctive word or one is the other's acronym.
+ */
+export function samePublisher(a: string, b: string): boolean {
+  const x = normalizeName(a);
+  const y = normalizeName(b);
+  if (!x || !y || x === y) return true;
+  if (x.replace(/ /g, "") === y.replace(/ /g, "")) return true;
+
+  const xs = significantWords(x);
+  const ys = significantWords(y);
+  // Nothing distinctive on one side, so there is nothing to disagree on.
+  if (xs.length === 0 || ys.length === 0) return true;
+
+  const theirs = new Set(ys);
+  if (xs.some((word) => word.length >= 3 && theirs.has(word))) return true;
+
+  const initials = (words: string[]) => words.map((word) => word[0]).join("");
+  if (xs.length === 1 && ys.length > 1 && initials(ys) === xs[0]) return true;
+  if (ys.length === 1 && xs.length > 1 && initials(xs) === ys[0]) return true;
+  return false;
+}
+
 function publisherConflicts(hit: DirectoryHit, author?: string): boolean {
-  if (!author?.trim()) return false;
-  const wanted = normalizeName(author);
-  if (!wanted) return false;
-  const got = normalizeName(hit.author ?? "");
-  if (!got) return false;
-  return got !== wanted;
+  if (!author?.trim() || !hit.author?.trim()) return false;
+  return !samePublisher(hit.author, author);
 }
 
 /**
@@ -52,7 +85,15 @@ export function pickDirectoryHit(
   );
   if (exact.length === 0) return { status: "none" };
 
-  const compatible = exact.filter((hit) => !publisherConflicts(hit, author));
+  // An exact publisher match beats a loose one. "The New York Times" should
+  // pick that show over "The New York Times One" with the same title.
+  const wantedAuthor = author ? normalizeName(author) : "";
+  const sameAuthor = wantedAuthor
+    ? exact.filter((hit) => normalizeName(hit.author ?? "") === wantedAuthor)
+    : [];
+  const compatible = sameAuthor.length
+    ? sameAuthor
+    : exact.filter((hit) => !publisherConflicts(hit, author));
   if (compatible.length === 0) return { status: "conflict", hit: exact[0] };
   if (compatible.length === 1) return { status: "match", hit: compatible[0] };
 
