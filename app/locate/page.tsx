@@ -17,6 +17,10 @@ const faqs = [
     a: "Spotify does not publish RSS. The show name is matched against Apple Podcasts. A Spotify-only show, or a title that does not match, cannot be resolved.",
   },
   {
+    q: "Why does my browser contact Apple?",
+    a: "Matching a show by name uses Apple's public search. Your browser sends that one request, so Apple sees your address rather than a shared server address it rate-limits. Nothing else is sent, and no cookies go with it.",
+  },
+  {
     q: "Can two shows with the same name get mixed up?",
     a: "An exact title is required. A supplied publisher that points at a different show blocks the match. When several shows still fit, the tool stops and names them.",
   },
@@ -48,8 +52,9 @@ export default function LocatePage() {
             <strong>Pocket Casts</strong>
             <p>
               The link carries a show id. The catalog address is kept only when the
-              response is RSS. A website address falls back to an exact title match,
-              and a conflicting publisher is not accepted.
+              response is RSS. A website address falls back to an exact title match
+              in Apple Podcasts, run from your browser, and a conflicting publisher
+              is not accepted.
             </p>
           </li>
           <li>
@@ -63,8 +68,8 @@ export default function LocatePage() {
             <strong>Spotify</strong>
             <p>
               The show name comes from the page, or from the episode embed, and is
-              matched to Apple Podcasts. One exact title is accepted. Several, or none,
-              are reported.
+              matched to Apple Podcasts from your browser. One exact title is
+              accepted. Several, or none, are reported.
             </p>
           </li>
         </ol>

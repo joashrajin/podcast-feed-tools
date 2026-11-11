@@ -162,16 +162,7 @@ export function assertPublicHttpUrl(raw: string, allowedHosts?: readonly string[
   return url;
 }
 
-export function asHttpsUrl(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "https:" || url.username || url.password) return undefined;
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-}
+export { asHttpsUrl } from "./url";
 
 function defaultLookup(hostname: string): Promise<ResolvedAddress[]> {
   return new Promise((resolve, reject) => {
