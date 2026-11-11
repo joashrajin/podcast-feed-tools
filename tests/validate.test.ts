@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ValidateError, validateFeed } from "../lib/validate";
+import { ValidateError, validateFeed, withoutCdata } from "../lib/validate";
 import type { SafeFetchOptions, SafeResponse } from "../lib/net";
 
 function feedFetch(body: string, contentType = "application/rss+xml"): (input: string, options: SafeFetchOptions) => Promise<SafeResponse> {
@@ -95,5 +95,17 @@ describe("validateFeed", () => {
     assert.equal(guids.checks.find((check) => check.id === "guids")?.level, "pass");
     assert.equal(guids.summary.episodeCount, 3);
     assert.deepEqual(guids.summary.enclosureTypes, [{ type: "audio/mpeg", count: 3 }]);
+  });
+
+  it("accepts an HTML page pasted into CDATA show notes", async () => {
+    const notes = "<![CDATA[<!DOCTYPE html><html><body><p>Notes</p></body></html>]]>";
+    const report = await validateFeed("https://example.com/feed.xml", feedFetch(base.replace("DESCRIPTION", notes)));
+    assert.equal(report.summary.title, "Desk");
+  });
+
+  it("still rejects a doctype that sits after an unclosed CDATA opener", () => {
+    assert.equal(withoutCdata("a<![CDATA[x]]>b"), "ab");
+    assert.match(withoutCdata("a<![CDATA[x <!DOCTYPE rss>"), /DOCTYPE/);
+    assert.equal(withoutCdata("<![CDATA[".repeat(100_000)).length, 900_000);
   });
 });

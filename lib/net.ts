@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { lookup as dnsLookup } from "node:dns";
-import { BlockList, isIP } from "node:net";
+import { BlockList, isIP, type TcpNetConnectOpts } from "node:net";
 import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
@@ -42,6 +42,7 @@ export class FetchError extends Error {
       | "too-large"
       | "network"
       | "too-many-redirects"
+      | "bad-redirect"
   ) {
     super(message);
     this.name = "FetchError";
@@ -226,6 +227,12 @@ export async function resolvePinned(
 
 export type SafeResponse = {
   url: string;
+  /**
+   * Where the resource lives for good: the request URL moved only by an
+   * unbroken run of 301 and 308 redirects from the start. A 302 or 307 can
+   * point at a signed or short-lived address, so it stops the run.
+   */
+  permanentUrl?: string;
   status: number;
   headers: Record<string, string>;
   body: string;
@@ -445,6 +452,16 @@ function callbackError(err: unknown): NodeJS.ErrnoException {
   return error;
 }
 
+/**
+ * Node tries IPv4 and IPv6 addresses in turn and gives each one 250ms by
+ * default. A host far away can take longer than that to accept, so every
+ * attempt was cut off and the request stalled until the deadline. The
+ * http.request types omit this socket option, though Node passes it through.
+ */
+const FAMILY_ATTEMPT: Pick<TcpNetConnectOpts, "autoSelectFamilyAttemptTimeout"> = {
+  autoSelectFamilyAttemptTimeout: 1500,
+};
+
 function nodeHop(
   url: URL,
   options: SafeFetchOptions,
@@ -463,11 +480,13 @@ function nodeHop(
         path: `${url.pathname}${url.search}`,
         method: options.method ?? "GET",
         servername: host,
+        ...FAMILY_ATTEMPT,
         headers: {
           accept: options.accept ?? "*/*",
           "accept-encoding": "gzip, deflate, br",
           "user-agent": options.userAgent,
-          host,
+          // url.host keeps a non-default port and IPv6 brackets.
+          host: url.host,
           ...(options.body ? { "content-type": "application/json" } : {}),
           ...options.headers,
         },
@@ -612,9 +631,22 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
     }
 
     let current = assertPublicHttpUrl(input, options.allowedHosts);
+    let permanent = current;
+    let movedForGood = true;
     if (options.haltWhen?.(current)) {
-      return { url: current.toString(), status: 200, headers: {}, body: "", bytes: new Uint8Array(), truncated: false };
+      return {
+        url: current.toString(),
+        permanentUrl: current.toString(),
+        status: 200,
+        headers: {},
+        body: "",
+        bytes: new Uint8Array(),
+        truncated: false,
+      };
     }
+
+    // Each hop gets the current method. A redirect can turn a POST into a GET.
+    let hopOptions: SafeFetchOptions = options;
 
     for (let hop = 0; hop <= maxRedirects; hop++) {
       if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
@@ -625,7 +657,7 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
             try {
               response = await options.fetchImpl!(current.toString(), {
                 signal: deadline,
-                method: options.method ?? "GET",
+                method: hopOptions.method ?? "GET",
               });
             } catch (err) {
               if (deadline.aborted || (err instanceof Error && err.name === "AbortError")) {
@@ -636,17 +668,31 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
             return stubHop(response, maxDecoded, deadline);
           })()
         : workers
-          ? await workersHop(current, options, deadline, maxDecoded)
-          : await nodeHop(current, options, lookup, deadline, maxDecoded);
+          ? await workersHop(current, hopOptions, deadline, maxDecoded)
+          : await nodeHop(current, hopOptions, lookup, deadline, maxDecoded);
 
       const location = result.headers.location;
       const redirect = [301, 302, 303, 307, 308].includes(result.status);
       if (redirect && location) {
         if (hop === maxRedirects) throw new FetchError("Too many redirects.", "too-many-redirects");
-        const next = assertPublicHttpUrl(new URL(location, current).toString(), options.allowedHosts);
+        let target: string;
+        try {
+          target = new URL(location, current).toString();
+        } catch {
+          throw new FetchError("The server redirected to an address that isn't a valid URL.", "bad-redirect");
+        }
+        const next = assertPublicHttpUrl(target, options.allowedHosts);
+        if (movedForGood && (result.status === 301 || result.status === 308)) permanent = next;
+        else movedForGood = false;
+        // Browsers follow a 303, and a 301 or 302 after a POST, with a GET and no body.
+        const method = hopOptions.method ?? "GET";
+        if (result.status === 303 || (method === "POST" && (result.status === 301 || result.status === 302))) {
+          hopOptions = { ...hopOptions, method: "GET", body: undefined };
+        }
         if (options.haltWhen?.(next)) {
           return {
             url: next.toString(),
+            permanentUrl: permanent.toString(),
             status: result.status,
             headers: result.headers,
             body: "",
@@ -661,6 +707,7 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
       if (result.truncated && !allowPartial) throw new FetchError("The response is too large.", "too-large");
       return {
         url: current.toString(),
+        permanentUrl: permanent.toString(),
         status: result.status,
         headers: result.headers,
         body: new TextDecoder().decode(result.bytes),

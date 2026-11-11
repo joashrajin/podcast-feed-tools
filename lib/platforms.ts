@@ -29,7 +29,16 @@ export function spotifyRef(url: URL): SpotifyRef | undefined {
   return { kind: parts[index] as SpotifyKind, id };
 }
 
+/**
+ * The show's UUID in a Pocket Casts URL. Show and web-player paths put it
+ * first: /podcast/<slug>/<show>/<episode-slug>/<episode> and
+ * /podcasts/<show>/<episode>. An /episode/<uuid> share link carries only the
+ * episode's UUID, so this returns undefined and the caller follows the
+ * redirect, which names the show.
+ */
 export function pocketCastsUuid(url: URL): string | undefined {
+  const first = url.pathname.split("/").find(Boolean)?.toLowerCase();
+  if (first === "episode" || first === "episodes") return undefined;
   return url.pathname.match(UUID_RE)?.[0];
 }
 

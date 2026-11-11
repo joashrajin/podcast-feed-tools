@@ -45,6 +45,19 @@ describe("parseShowLink", () => {
     assert.equal(pocketCastsUuid(new URL("https://pca.st/9e6hvl11")), undefined);
   });
 
+  it("takes the show uuid, not the episode uuid, from Pocket Casts links", () => {
+    const show = "4eb5b260-c933-0134-10da-25324e2a541d";
+    const episode = "1d9d0634-f27a-4b93-b83f-8a300f943c61";
+    assert.equal(pocketCastsUuid(new URL(`https://pca.st/episode/${episode}`)), undefined);
+    assert.equal(pocketCastsUuid(new URL(`https://pocketcasts.com/episode/${episode}?t=30`)), undefined);
+    assert.equal(
+      pocketCastsUuid(new URL(`https://pocketcasts.com/podcast/the-daily/${show}/some-episode/${episode}`)),
+      show
+    );
+    assert.equal(pocketCastsUuid(new URL(`https://play.pocketcasts.com/podcasts/${show}/${episode}`)), show);
+    assert.equal(pocketCastsUuid(new URL(`https://pca.st/podcast/${show}`)), show);
+  });
+
   it("rejects unrelated hosts and non-http URLs", () => {
     assert.equal(detectPlatform("https://example.com/feed.xml"), null);
     const parsed = parseShowLink("file:///tmp/feed.xml");

@@ -61,9 +61,27 @@ function headerValue(headers: Record<string, string | string[] | undefined>, nam
   return value ?? "";
 }
 
+/** Drop CDATA sections. Linear, so a feed full of unclosed openers can't stall it. */
+export function withoutCdata(xml: string): string {
+  let out = "";
+  let from = 0;
+  while (true) {
+    const start = xml.indexOf("<![CDATA[", from);
+    if (start === -1) return out + xml.slice(from);
+    out += xml.slice(from, start);
+    const end = xml.indexOf("]]>", start + 9);
+    // Unclosed: keep the rest, so nothing after it escapes the check.
+    if (end === -1) return out + xml.slice(start);
+    from = end + 3;
+  }
+}
+
 function failure(err: unknown): ValidateError {
   if (err instanceof ValidateError) return err;
   if (err instanceof FetchError) {
+    if (err.code === "bad-redirect") {
+      return new ValidateError("The feed redirected to an address that isn't a valid URL.");
+    }
     if (err.code === "blocked" || err.code === "invalid-url") {
       return new ValidateError("That address isn't a public http(s) URL. Local and private addresses are refused.");
     }
@@ -182,7 +200,10 @@ export async function validateFeed(
   }
 
   const xml = response.body;
-  if (/<!doctype/i.test(xml)) {
+  // A DTD can declare entities, so a feed with one is refused. Show notes
+  // often paste a whole HTML page, <!DOCTYPE html> included, inside CDATA.
+  // The parser reads CDATA as text, so it is left out of the check.
+  if (/<!doctype/i.test(withoutCdata(xml))) {
     throw new ValidateError(
       "The feed includes a DOCTYPE declaration. Podcast RSS should be a plain document without one."
     );
