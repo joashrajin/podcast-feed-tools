@@ -66,13 +66,37 @@ function ambiguousMessage(title: string, candidates: DirectoryHit[]): string {
   return `Several Apple Podcasts shows are named "${title}": ${listed}. Paste the Apple Podcasts link for the one you want.`;
 }
 
-async function readJson(response: SafeResponse, failure: string): Promise<unknown> {
+/**
+ * One line in the runtime log for each upstream that answered badly, so a
+ * failure on the host can be told apart: blocked, rate-limited, or changed.
+ * Nothing from the visitor is logged beyond the show URL or title they sent.
+ */
+export function logUpstream(stage: string, url: string, detail: Record<string, unknown>): void {
+  console.warn(`[upstream] ${stage} ${JSON.stringify({ url, ...detail })}`);
+}
+
+function responseDetail(response: SafeResponse): Record<string, unknown> {
+  const headers = Object.fromEntries(
+    Object.entries(response.headers).filter(([name]) => name !== "set-cookie")
+  );
+  return {
+    status: response.status,
+    finalUrl: response.url,
+    headers,
+    body: response.body.replace(/\s+/g, " ").slice(0, 400),
+    truncated: response.truncated ?? false,
+  };
+}
+
+async function readJson(response: SafeResponse, failure: string, stage: string, url: string): Promise<unknown> {
   if (response.status < 200 || response.status >= 300) {
+    logUpstream(stage, url, { problem: "status", ...responseDetail(response) });
     throw new ResolveError(failure);
   }
   try {
     return JSON.parse(response.body);
   } catch {
+    logUpstream(stage, url, { problem: "not-json", ...responseDetail(response) });
     throw new ResolveError(failure);
   }
 }
@@ -112,10 +136,10 @@ async function searchItunes(
       maxBytes: 2_000_000,
     });
   } catch (err) {
-    throw upstreamError(err, "Apple's directory didn't respond, so the show couldn't be matched.");
+    throw upstreamError(err, "Apple's directory didn't respond, so the show couldn't be matched.", "apple-search", endpoint.toString());
   }
 
-  const data = await readJson(response, "Apple's directory returned something that couldn't be read.");
+  const data = await readJson(response, "Apple's directory returned something that couldn't be read.", "apple-search", endpoint.toString());
   const results = (data as { results?: unknown }).results;
   const hits = Array.isArray(results) ? results.map(mapItunes) : [];
   const outcome = pickDirectoryHit(hits, title, author);
@@ -141,8 +165,13 @@ async function searchItunes(
   );
 }
 
-function upstreamError(err: unknown, fallback: string): ResolveError {
+function upstreamError(err: unknown, fallback: string, stage = "fetch", url = ""): ResolveError {
   if (err instanceof ResolveError) return err;
+  logUpstream(stage, url, {
+    problem: "fetch-error",
+    code: err instanceof FetchError ? err.code : undefined,
+    message: err instanceof Error ? err.message : String(err),
+  });
   if (err instanceof FetchError) return new ResolveError(fallback);
   return new ResolveError(fallback);
 }
@@ -165,10 +194,10 @@ async function resolveApple(inputUrl: URL, deps: ResolverDeps): Promise<ResolveR
       maxBytes: 1_000_000,
     });
   } catch (err) {
-    throw upstreamError(err, "Apple's directory didn't respond. Try again in a moment.");
+    throw upstreamError(err, "Apple's directory didn't respond. Try again in a moment.", "apple-lookup", endpoint.toString());
   }
 
-  const data = await readJson(response, "Apple's directory returned something that couldn't be read.");
+  const data = await readJson(response, "Apple's directory returned something that couldn't be read.", "apple-lookup", endpoint.toString());
   const results = (data as { results?: unknown }).results;
   const hits = Array.isArray(results) ? results.map(mapItunes) : [];
   const podcast = hits.find((hit) => hit.feedUrl);
@@ -198,9 +227,10 @@ async function spotifyShowMeta(
       allowPartial: true,
     });
   } catch (err) {
-    throw upstreamError(err, "Spotify didn't respond for that show. Check that the link is public.");
+    throw upstreamError(err, "Spotify didn't respond for that show. Check that the link is public.", "spotify-show", `https://open.spotify.com/show/${id}`);
   }
   if (response.status < 200 || response.status >= 300) {
+    logUpstream("spotify-show", `https://open.spotify.com/show/${id}`, { problem: "status", ...responseDetail(response) });
     throw new ResolveError("Spotify didn't return that show. Check that the link is public.");
   }
   return {
@@ -236,9 +266,10 @@ async function resolveSpotify(inputUrl: URL, deps: ResolverDeps): Promise<Resolv
         maxUncompressedBytes: 400_000,
       });
     } catch (err) {
-      throw upstreamError(err, "Spotify didn't respond for that episode. Check that the link is public.");
+      throw upstreamError(err, "Spotify didn't respond for that episode. Check that the link is public.", "spotify-episode", `https://open.spotify.com/embed/episode/${ref.id}`);
     }
     if (response.status < 200 || response.status >= 300) {
+      logUpstream("spotify-episode", `https://open.spotify.com/embed/episode/${ref.id}`, { problem: "status", ...responseDetail(response) });
       throw new ResolveError("Spotify didn't return that episode. Check that the link is public.");
     }
     const entity = spotifyEmbedEntity(response.body);
@@ -298,6 +329,11 @@ async function fetchCatalog(uuid: string, deps: ResolverDeps): Promise<SafeRespo
         maxUncompressedBytes: 6_000_000,
       });
     } catch (err) {
+      logUpstream("pocketcasts-catalog", `${endpoint}${uuid}`, {
+        problem: "fetch-error",
+        code: err instanceof FetchError ? err.code : undefined,
+        message: err instanceof Error ? err.message : String(err),
+      });
       if (err instanceof FetchError && err.code === "too-large") {
         throw new ResolveError("Pocket Casts' listing for that show is too large to read.");
       }
@@ -309,6 +345,7 @@ async function fetchCatalog(uuid: string, deps: ResolverDeps): Promise<SafeRespo
       );
     }
     if (response.status >= 500 || response.status === 429) {
+      logUpstream("pocketcasts-catalog", `${endpoint}${uuid}`, { problem: "status", ...responseDetail(response) });
       failure = new ResolveError("Pocket Casts' catalog is having trouble. Try again in a moment.");
       continue;
     }
@@ -319,7 +356,7 @@ async function fetchCatalog(uuid: string, deps: ResolverDeps): Promise<SafeRespo
 
 async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
   const response = await fetchCatalog(uuid, deps);
-  const data = await readJson(response, "Pocket Casts returned something that couldn't be read.");
+  const data = await readJson(response, "Pocket Casts returned something that couldn't be read.", "pocketcasts-catalog", response.url);
   const podcast = (data as { podcast?: Record<string, unknown> }).podcast ?? (data as Record<string, unknown>);
   const title = typeof podcast.title === "string" ? podcast.title.trim() : undefined;
   const author = typeof podcast.author === "string" ? podcast.author.trim() : undefined;
@@ -375,7 +412,7 @@ async function resolvePocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Re
         haltWhen: (url) => Boolean(pocketCastsUuid(url)),
       });
     } catch (err) {
-      throw upstreamError(err, "Pocket Casts didn't respond for that link. Is it public?");
+      throw upstreamError(err, "Pocket Casts didn't respond for that link. Is it public?", "pocketcasts-page", pageUrl.toString());
     }
     pageUrl = new URL(response.url);
     uuid = pocketCastsUuid(pageUrl);
