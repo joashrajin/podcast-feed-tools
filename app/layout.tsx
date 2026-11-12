@@ -29,7 +29,7 @@ const themeBoot = `(function(){try{var k="feed-tools-theme";var t=localStorage.g
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: `${SITE_NAME} — search, locate, check`,
+    default: SITE_NAME,
     template: `%s · ${SITE_NAME}`,
   },
   description:

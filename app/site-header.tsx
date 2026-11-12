@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { SITE_NAME } from "@/lib/site";
+import { SITE_MARK, SITE_TAGLINE } from "@/lib/site";
 
 const THEME_KEY = "feed-tools-theme";
 
@@ -30,9 +30,9 @@ export default function SiteHeader() {
       <div className="shell mast-top">
         <div>
           <Link href="/" className="mark">
-            {SITE_NAME}
+            {SITE_MARK}
           </Link>
-          <p className="kicker">Search, locate, check</p>
+          <p className="kicker">{SITE_TAGLINE ?? "Search, locate, check"}</p>
         </div>
         <nav className="nav" aria-label="Primary">
           {links.map((link) => {

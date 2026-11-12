@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { SITE_NAME } from "@/lib/site";
 import ResolverForm from "../resolver-form";
 
 export const metadata: Metadata = {
@@ -42,7 +41,7 @@ export default function LocatePage() {
       <h1>The feed behind a show link</h1>
       <p className="lede">
         Pocket Casts, Apple Podcasts, and Spotify links point at a catalog page.
-        {" "}{SITE_NAME} returns the RSS feed when the show is listed publicly.
+        {" "}Paste one here to get the show&apos;s RSS feed, when the show is listed publicly.
       </p>
       <ResolverForm />
       <section className="section">
