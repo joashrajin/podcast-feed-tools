@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Inter } from "next/font/google";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
 import SiteHeader from "./site-header";
@@ -24,6 +24,7 @@ const themeBoot = `(function(){try{var k="feed-tools-theme";var t=localStorage.g
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
+  applicationName: SITE_NAME,
   title: {
     default: SITE_NAME,
     template: `%s · ${SITE_NAME}`,
@@ -32,19 +33,37 @@ export const metadata: Metadata = {
     "Turn a show link into its RSS feed, search Pocket Casts, and check a feed.",
   keywords: [
     "podcast rss feed",
+    "find podcast rss feed",
     "pocket casts rss",
     "apple podcasts rss",
     "spotify podcast rss",
     "podcast feed validator",
+    "podcast rss checker",
   ],
+  // Lets search results show the full share image and snippet.
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 },
+  },
+  // Pages set their own; this covers any page that doesn't.
   openGraph: {
-    title: `${SITE_NAME} — RSS from a show link`,
+    type: "website",
+    siteName: SITE_NAME,
+    locale: "en",
+    title: SITE_NAME,
     description:
       "Resolve a Pocket Casts, Apple Podcasts, or Spotify link to the show's public RSS feed, and check a feed for the problems that stop it updating.",
-    url: SITE_URL,
-    siteName: SITE_NAME,
-    type: "website",
   },
+  twitter: { card: "summary_large_image" },
+  formatDetection: { telephone: false, email: false, address: false },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f7f9fa" },
+    { media: "(prefers-color-scheme: dark)", color: "#161718" },
+  ],
 };
 
 export default function RootLayout({
