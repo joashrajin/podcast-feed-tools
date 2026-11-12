@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { jsonNoStore, readJsonObject } from "@/lib/api";
-import { POCKET_CASTS_SUBMIT_URL, SearchError, searchPocketCasts } from "@/lib/search";
+import { POCKET_CASTS_SUBMIT_URL } from "@/lib/search";
+import { SearchError, searchPocketCasts } from "@/lib/search-server";
 
 export async function POST(req: NextRequest) {
   const body = await readJsonObject(req);

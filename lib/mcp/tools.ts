@@ -10,7 +10,8 @@ import {
   type PocketCastsEpisode,
   type PocketCastsShow,
 } from "../resolve";
-import { pocketCastsShowUrl, SearchError, searchPocketCasts } from "../search";
+import { pocketCastsShowUrl } from "../search";
+import { SearchError, searchPocketCasts } from "../search-server";
 import type { FeedEpisode } from "../types";
 import { inspectFeed, ValidateError } from "../validate";
 import { errorResult, textResult, type Tool, type ToolResult } from "./server";
