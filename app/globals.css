@@ -189,10 +189,23 @@ code {
 
 .brand {
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  align-items: center;
+  gap: 0.65rem;
   color: var(--ink);
   text-decoration: none;
+}
+
+.brand-icon {
+  display: block;
+  flex: none;
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
 }
 
 .brand:hover { text-decoration: none; }
@@ -663,7 +676,9 @@ textarea.input {
 
 @media (max-width: 680px) {
   .mast-row { flex-direction: column; align-items: stretch; gap: 0.6rem; padding: 0.7rem 0; }
-  .brand { flex-direction: row; align-items: baseline; gap: 0.5rem; }
+  .brand { gap: 0.55rem; }
+  .brand-icon { width: 1.75rem; height: 1.75rem; }
+  .brand-text { flex-direction: row; align-items: baseline; gap: 0.5rem; }
   .nav { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem; padding: 0.2rem; border-radius: 999px; background: var(--pill); }
   .nav a { text-align: center; padding: 0.42rem 0.4rem; font-size: 0.85rem; }
   .nav a:hover { background: transparent; }
