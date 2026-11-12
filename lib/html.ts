@@ -4,10 +4,16 @@ function safeChar(code: number): string {
   return String.fromCodePoint(code);
 }
 
+const NAMED: Record<string, string> = {
+  raquo: "»", laquo: "«", ndash: "–", mdash: "—", hellip: "…", nbsp: " ", rsquo: "’", lsquo: "‘",
+  rdquo: "”", ldquo: "“", middot: "·", bull: "•", trade: "™", copy: "©", reg: "®",
+};
+
 export function decodeEntities(value: string): string {
   return value
     .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => safeChar(Number.parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, digits: string) => safeChar(Number.parseInt(digits, 10)))
+    .replace(/&(raquo|laquo|ndash|mdash|hellip|nbsp|rsquo|lsquo|rdquo|ldquo|middot|bull|trade|copy|reg);/gi, (_, name: string) => NAMED[name.toLowerCase()] ?? "")
     .replace(/&quot;/gi, '"')
     .replace(/&apos;/gi, "'")
     .replace(/&#39;/g, "'")
@@ -26,7 +32,7 @@ function metaTag(html: string, property: string): string | undefined {
   return undefined;
 }
 
-function attr(tag: string, name: string): string | undefined {
+export function attr(tag: string, name: string): string | undefined {
   const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
   return match?.[2];
 }

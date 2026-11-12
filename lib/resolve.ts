@@ -18,7 +18,20 @@ import {
   spotifyEmbedEntity,
   spotifyPublisher,
 } from "./html";
-import { asHttpsUrl, assertPublicHttpUrl, FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
+import { asHttpsUrl, FetchError, type SafeResponse } from "./net";
+import {
+  fetchWith,
+  logUpstream,
+  publicFeedUrl,
+  ResolveError,
+  responseDetail,
+  upstreamError,
+  type ResolverDeps,
+} from "./upstream";
+import { discoverWebsite, resolveSoundCloud, resolveYouTube } from "./discover";
+
+export { logUpstream, ResolveError } from "./upstream";
+export type { ResolverDeps } from "./upstream";
 
 export type { ResolveResult } from "./types";
 export type { DirectorySearch } from "./directory";
@@ -30,8 +43,6 @@ export type { DirectorySearch } from "./directory";
  */
 export type Identified = { result: ResolveResult } | { search: DirectorySearch };
 export { detectPlatform } from "./platforms";
-
-export class ResolveError extends Error {}
 
 const POCKETCASTS_WEB = [
   "pca.st",
@@ -46,52 +57,10 @@ const POCKETCASTS_API = [
   "cache.pocketcasts.com",
 ] as const;
 
-export type ResolverDeps = {
-  fetch?: (input: string, options: SafeFetchOptions) => Promise<SafeResponse>;
-  /** Clock for the shared Apple deadline. Tests advance it instead of waiting. */
-  now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
-};
-
-function fetchWith(deps: ResolverDeps) {
-  return deps.fetch ?? safeFetch;
-}
-
-function publicFeedUrl(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  try {
-    return assertPublicHttpUrl(raw).toString();
-  } catch {
-    return undefined;
-  }
-}
-
 function fromHit(hit: DirectoryHit, matchedBy: MatchSource, platform: Platform): ResolveResult {
   const outcome = resultFromHit(hit, matchedBy, platform, publicFeedUrl);
   if (!outcome.ok) throw new ResolveError(outcome.error);
   return outcome.result;
-}
-
-/**
- * One line in the runtime log for each upstream that answered badly, so a
- * failure on the host can be told apart: blocked, rate-limited, or changed.
- * Nothing from the visitor is logged beyond the show URL or title they sent.
- */
-export function logUpstream(stage: string, url: string, detail: Record<string, unknown>): void {
-  console.warn(`[upstream] ${stage} ${JSON.stringify({ url, ...detail })}`);
-}
-
-function responseDetail(response: SafeResponse): Record<string, unknown> {
-  const headers = Object.fromEntries(
-    Object.entries(response.headers).filter(([name]) => name !== "set-cookie")
-  );
-  return {
-    status: response.status,
-    finalUrl: response.url,
-    headers,
-    body: response.body.replace(/\s+/g, " ").slice(0, 400),
-    truncated: response.truncated ?? false,
-  };
 }
 
 async function readJson(response: SafeResponse, failure: string, stage: string, url: string): Promise<unknown> {
@@ -199,17 +168,6 @@ export async function searchItunes(search: DirectorySearch, deps: ResolverDeps =
   const outcome = matchSearchResults(data, search, publicFeedUrl);
   if (!outcome.ok) throw new ResolveError(outcome.error);
   return outcome.result;
-}
-
-function upstreamError(err: unknown, fallback: string, stage = "fetch", url = ""): ResolveError {
-  if (err instanceof ResolveError) return err;
-  logUpstream(stage, url, {
-    problem: "fetch-error",
-    code: err instanceof FetchError ? err.code : undefined,
-    message: err instanceof Error ? err.message : String(err),
-  });
-  if (err instanceof FetchError) return new ResolveError(fallback);
-  return new ResolveError(fallback);
 }
 
 async function resolveApple(inputUrl: URL, deps: ResolverDeps): Promise<ResolveResult> {
@@ -618,13 +576,24 @@ async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<I
   return { search: { title: catalog.title, author: catalog.author, platform: "pocketcasts", artwork } };
 }
 
-/** Find the show. Stops before the Apple name search, which the caller runs where it can. */
+/** Find the show or feed. Stops before the Apple name search, which the caller runs where it can. */
 export async function identifyShow(input: string, deps: ResolverDeps = {}): Promise<Identified> {
   const parsed = parseShowLink(input);
   if ("error" in parsed) throw new ResolveError(parsed.error);
-  if (parsed.platform === "apple") return { result: await resolveApple(parsed.url, deps) };
-  if (parsed.platform === "spotify") return identifySpotify(parsed.url, deps);
-  return identifyPocketCasts(parsed.url, deps);
+  switch (parsed.platform) {
+    case "apple":
+      return { result: await resolveApple(parsed.url, deps) };
+    case "spotify":
+      return identifySpotify(parsed.url, deps);
+    case "pocketcasts":
+      return identifyPocketCasts(parsed.url, deps);
+    case "youtube":
+      return { result: await resolveYouTube(parsed.url, deps) };
+    case "soundcloud":
+      return { result: await resolveSoundCloud(parsed.url, deps) };
+    case "website":
+      return { result: await discoverWebsite(parsed.url, deps) };
+  }
 }
 
 /** Find the show and its feed, running the Apple name search on the server. */

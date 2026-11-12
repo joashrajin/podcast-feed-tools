@@ -207,10 +207,13 @@ export function tools(deps: ToolDeps = {}): Tool[] {
     },
     {
       name: "find_feed_url",
-      title: "Find a show's RSS feed",
+      title: "Find an RSS feed",
       description:
-        "Turn a Pocket Casts, Apple Podcasts, or Spotify show or episode link into the show's public RSS feed URL.",
-      inputSchema: schema({ link: { type: "string", description: "A show or episode link." } }, ["link"]),
+        "Turn a link into its public RSS feed URL: a Pocket Casts, Apple Podcasts, or Spotify show or episode; a YouTube channel, handle, playlist, or video; a SoundCloud profile or track; or any blog or website, whose feed is discovered from the page and common feed addresses.",
+      inputSchema: schema(
+        { link: { type: "string", description: "A podcast, YouTube, SoundCloud, or website link. https:// is optional." } },
+        ["link"]
+      ),
       run: (args) =>
         attempt(async () => {
           const link = text(args, "link", 2000, true);
@@ -429,6 +432,6 @@ export const INSTRUCTIONS = [
   "Start from a Pocket Casts link, a show UUID, or search_pocket_casts.",
   "get_pocket_casts_show shows what Pocket Casts has. check_feed finds problems in the RSS feed. list_feed_episodes shows what the feed itself says.",
   "When an episode is missing or Pocket Casts looks out of date, use compare_feed_with_pocket_casts.",
-  "find_feed_url turns a Pocket Casts, Apple Podcasts, or Spotify link into the feed URL.",
+  "find_feed_url turns a podcast, YouTube, SoundCloud, or website link into its RSS feed URL.",
   "Feed URLs can be private links. Nothing sent to these tools is stored.",
 ].join(" ");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { appleShowId, detectPlatform, parseShowLink, pocketCastsUuid, spotifyRef } from "../lib/platforms";
+import { appleShowId, detectPlatform, parseShowLink, pocketCastsUuid, soundcloudRef, spotifyRef, youtubeRef } from "../lib/platforms";
 
 describe("parseShowLink", () => {
   it("recognises Pocket Casts hosts", () => {
@@ -58,9 +58,72 @@ describe("parseShowLink", () => {
     assert.equal(pocketCastsUuid(new URL(`https://pca.st/podcast/${show}`)), show);
   });
 
-  it("rejects unrelated hosts and non-http URLs", () => {
-    assert.equal(detectPlatform("https://example.com/feed.xml"), null);
+  it("treats any other public address as a website and refuses non-http URLs", () => {
+    assert.equal(detectPlatform("https://example.com/feed.xml"), "website");
     const parsed = parseShowLink("file:///tmp/feed.xml");
     assert.equal("error" in parsed && parsed.error.includes("http"), true);
+    assert.equal("error" in parseShowLink("http://intranet/"), true);
+  });
+
+  it("adds https:// to a bare domain", () => {
+    const parsed = parseShowLink("joash.blog/about");
+    assert.equal("url" in parsed && parsed.url.toString(), "https://joash.blog/about");
+    assert.equal("platform" in parsed && parsed.platform, "website");
+    assert.equal(detectPlatform("youtube.com/@NASA"), "youtube");
+    assert.equal("error" in parseShowLink("not a link"), true);
+  });
+});
+
+describe("youtubeRef", () => {
+  const ref = (link: string) => youtubeRef(new URL(link));
+  const channel = "UCBJycsmduvYEL83R_U4JriQ";
+
+  it("reads channel ids and playlists without a fetch", () => {
+    assert.deepEqual(ref(`https://www.youtube.com/channel/${channel}`), { kind: "channel", id: channel });
+    assert.deepEqual(ref(`https://www.youtube.com/channel/${channel}/videos`), { kind: "channel", id: channel });
+    assert.deepEqual(ref("https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"), {
+      kind: "playlist",
+      id: "PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI",
+    });
+    assert.deepEqual(ref(`https://www.youtube.com/feeds/videos.xml?channel_id=${channel}`), { kind: "channel", id: channel });
+  });
+
+  it("sends handles, custom links, and videos to their page", () => {
+    assert.deepEqual(ref("https://www.youtube.com/@mkbhd/videos"), { kind: "page", url: "https://www.youtube.com/@mkbhd" });
+    assert.deepEqual(ref("https://m.youtube.com/c/Example"), { kind: "page", url: "https://www.youtube.com/c/Example" });
+    assert.deepEqual(ref("https://youtu.be/dQw4w9WgXcQ?si=abc"), { kind: "page", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" });
+    assert.deepEqual(ref("https://www.youtube.com/shorts/abcdefghijk"), { kind: "page", url: "https://www.youtube.com/watch?v=abcdefghijk" });
+    assert.deepEqual(ref("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"), {
+      kind: "page",
+      url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    });
+  });
+
+  it("refuses pages that aren't a channel, playlist, or video", () => {
+    assert.equal(ref("https://www.youtube.com/feed/trending"), undefined);
+    assert.equal(ref("https://www.youtube.com/playlist?list=WL"), undefined);
+    const parsed = parseShowLink("https://www.youtube.com/results?search_query=x");
+    assert.equal("error" in parsed && parsed.error.includes("YouTube"), true);
+  });
+});
+
+describe("soundcloudRef", () => {
+  const ref = (link: string) => soundcloudRef(new URL(link));
+
+  it("finds the account behind a profile, track, or set", () => {
+    assert.deepEqual(ref("https://soundcloud.com/StarTalk"), { kind: "user", username: "startalk" });
+    assert.deepEqual(ref("https://m.soundcloud.com/forss/flickermood"), { kind: "user", username: "forss" });
+    assert.deepEqual(ref("https://soundcloud.com/forss/sets/soulhack"), { kind: "user", username: "forss" });
+  });
+
+  it("keeps short links and feed addresses apart", () => {
+    assert.deepEqual(ref("https://on.soundcloud.com/AbC123"), { kind: "short", url: "https://on.soundcloud.com/AbC123" });
+    assert.deepEqual(ref("https://feeds.soundcloud.com/users/soundcloud:users:183/sounds.rss"), { kind: "feed", userId: "183" });
+  });
+
+  it("refuses SoundCloud's own pages", () => {
+    assert.equal(ref("https://soundcloud.com/discover"), undefined);
+    assert.equal(ref("https://soundcloud.com/"), undefined);
+    assert.equal(detectPlatform("https://soundcloud.com/search?q=x"), null);
   });
 });
