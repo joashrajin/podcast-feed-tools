@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { SITE_NAME } from "@/lib/site";
 import SearchForm from "./search-form";
 
 export const metadata: Metadata = {
-  title: "Search Pocket Casts",
+  // The layout's title template skips a page in its own segment, so this
+  // page names the site itself.
+  title: { absolute: `Search Pocket Casts · ${SITE_NAME}` },
   description: "Search the Pocket Casts directory and open a show on Pocket Casts.",
 };
 

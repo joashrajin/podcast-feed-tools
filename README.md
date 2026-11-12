@@ -1,4 +1,4 @@
-# Feed Tools
+# Podcast: Search and Tools
 
 Three small tools for podcast RSS.
 
@@ -27,8 +27,8 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 
 | Variable | Purpose |
 | --- | --- |
-| `NEXT_PUBLIC_SITE_NAME` | Name in the header, titles, and the User-Agent. Defaults to `Feed Tools`. |
-| `NEXT_PUBLIC_SITE_URL` | Public origin, with no path. Used for metadata, `robots.txt`, the sitemap, and the User-Agent. Defaults to `http://localhost:3000`. Set this in production. |
+| `NEXT_PUBLIC_SITE_NAME` | Name in the header, titles, and the User-Agent. Defaults to `Podcast: Search and Tools`. A name with `: ` shows the part before it as the header mark and the rest beneath it. |
+| `NEXT_PUBLIC_SITE_URL` | Public origin, with no path. Used for metadata, `robots.txt`, the sitemap, and the User-Agent. Defaults to `https://podcast.space.fast` in production builds and `http://localhost:3000` otherwise. |
 
 ## Search
 
