@@ -1,19 +1,15 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Newsreader, Public_Sans } from "next/font/google";
+import { IBM_Plex_Mono, Inter } from "next/font/google";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
 import SiteHeader from "./site-header";
+import ThemeToggle from "./theme-toggle";
 import "./globals.css";
 
-const sans = Public_Sans({
+// Pocket Casts sets its site in Retina and SF Pro, which can't be served
+// from here. Inter is the closest open grotesque.
+const sans = Inter({
   subsets: ["latin"],
-  variable: "--font-public-sans",
-  display: "swap",
-});
-
-const serif = Newsreader({
-  subsets: ["latin"],
-  style: ["normal", "italic"],
-  variable: "--font-newsreader",
+  variable: "--font-inter",
   display: "swap",
 });
 
@@ -59,7 +55,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${sans.variable} ${serif.variable} ${mono.variable}`}
+      className={`${sans.variable} ${mono.variable}`}
       suppressHydrationWarning
     >
       <head>
@@ -78,6 +74,7 @@ export default function RootLayout({
             {SITE_NAME}. Public directories only. Private and paid feeds are not returned.
           </div>
         </footer>
+        <ThemeToggle />
       </body>
     </html>
   );
