@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   images: { unoptimized: true },
+  async redirects() {
+    // The feed finder was at /locate before it became the homepage.
+    return [{ source: "/locate", destination: "/", permanent: true }];
+  },
   async headers() {
     return [
       {
