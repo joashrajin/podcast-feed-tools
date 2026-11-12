@@ -266,6 +266,39 @@ type Catalog = {
   isPrivate: boolean;
 };
 
+export type PocketCastsEpisode = {
+  uuid: string;
+  title?: string;
+  published?: string;
+  durationSeconds?: number;
+  fileType?: string;
+  fileSize?: number;
+  url?: string;
+  type?: string;
+};
+
+/** A show as Pocket Casts' catalog has it. */
+export type PocketCastsShow = {
+  uuid: string;
+  title?: string;
+  author?: string;
+  /** The catalog's `url`: usually the show's website, sometimes its feed. */
+  website?: string;
+  isPrivate: boolean;
+  showType?: string;
+  categories: string[];
+  explicit?: boolean;
+  episodeCount?: number;
+  episodeFrequency?: string;
+  estimatedNextEpisodeAt?: string;
+  /** True when the catalog left older episodes out of this listing. */
+  hasMoreEpisodes?: boolean;
+  /** Newest first. */
+  episodes: PocketCastsEpisode[];
+};
+
+const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Two front doors to the same catalog. The second is tried only when the first
 // is down, not when it says the show doesn't exist.
 const CATALOG_ENDPOINTS = [
@@ -312,19 +345,55 @@ async function fetchCatalog(uuid: string, deps: ResolverDeps): Promise<SafeRespo
   throw failure;
 }
 
-async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
+const str = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** Read Pocket Casts' catalog entry for a show UUID. */
+export async function readPocketCastsShow(uuid: string, deps: ResolverDeps = {}): Promise<PocketCastsShow> {
   const response = await fetchCatalog(uuid, deps);
   const data = await readJson(response, "Pocket Casts returned something that couldn't be read.", "pocketcasts-catalog", response.url);
-  const podcast = (data as { podcast?: Record<string, unknown> }).podcast ?? (data as Record<string, unknown>);
-  const title = typeof podcast.title === "string" ? podcast.title.trim() : undefined;
-  const author = typeof podcast.author === "string" ? podcast.author.trim() : undefined;
-  const url = typeof podcast.url === "string" ? podcast.url.trim() : undefined;
+  const top = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const podcast = (top.podcast && typeof top.podcast === "object" ? top.podcast : top) as Record<string, unknown>;
+  const episodes: PocketCastsEpisode[] = [];
+  for (const raw of Array.isArray(podcast.episodes) ? podcast.episodes : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const id = str(row.uuid);
+    if (!id) continue;
+    const published = str(row.published);
+    episodes.push({
+      uuid: id,
+      title: str(row.title),
+      published: published && !Number.isNaN(Date.parse(published)) ? new Date(published).toISOString() : published,
+      durationSeconds: num(row.duration),
+      fileType: str(row.file_type),
+      fileSize: num(row.file_size),
+      url: str(row.url),
+      type: str(row.type),
+    });
+  }
+  episodes.sort((a, b) => (Date.parse(b.published ?? "") || 0) - (Date.parse(a.published ?? "") || 0));
+  const category = str(podcast.category);
   return {
-    title: title || undefined,
-    author: author || undefined,
-    feedCandidate: url || undefined,
+    uuid,
+    title: str(podcast.title),
+    author: str(podcast.author),
+    website: str(podcast.url),
     isPrivate: podcast.is_private === true || podcast.isPrivate === true,
+    showType: str(podcast.show_type),
+    categories: category ? category.split(/\n+/).map((part) => part.trim()).filter(Boolean) : [],
+    explicit: typeof podcast.explicit === "boolean" ? podcast.explicit : undefined,
+    episodeCount: num(top.episode_count) ?? episodes.length,
+    episodeFrequency: str(top.episode_frequency),
+    estimatedNextEpisodeAt: str(top.estimated_next_episode_at),
+    hasMoreEpisodes: typeof top.has_more_episodes === "boolean" ? top.has_more_episodes : undefined,
+    episodes,
   };
+}
+
+async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
+  const show = await readPocketCastsShow(uuid, deps);
+  return { title: show.title, author: show.author, feedCandidate: show.website, isPrivate: show.isPrivate };
 }
 
 async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<string | undefined> {
@@ -349,7 +418,21 @@ async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<strin
   }
 }
 
-async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Identified> {
+/**
+ * The show UUID behind a Pocket Casts link, or a UUID given as is. Share
+ * links that carry only an episode id are followed to the show page.
+ */
+export async function pocketCastsShowId(input: string, deps: ResolverDeps = {}): Promise<string> {
+  const trimmed = input.trim();
+  if (UUID_ONLY.test(trimmed)) return trimmed.toLowerCase();
+  const parsed = parseShowLink(trimmed);
+  if ("error" in parsed || parsed.platform !== "pocketcasts") {
+    throw new ResolveError("That isn't a Pocket Casts link. Give a pca.st or pocketcasts.com link, or a show UUID.");
+  }
+  return pocketCastsLinkUuid(parsed.url, deps);
+}
+
+async function pocketCastsLinkUuid(inputUrl: URL, deps: ResolverDeps): Promise<string> {
   const fetch = fetchWith(deps);
   let pageUrl = inputUrl;
   let uuid = pocketCastsUuid(pageUrl);
@@ -389,7 +472,19 @@ async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<I
   if (!uuid) {
     throw new ResolveError("Couldn't find a show id in that Pocket Casts link.");
   }
+  return uuid.toLowerCase();
+}
 
+/**
+ * The catalog's address for the show, when it answers as RSS. Pocket Casts
+ * usually stores the website there instead.
+ */
+export async function catalogFeedUrl(show: PocketCastsShow, deps: ResolverDeps = {}): Promise<string | undefined> {
+  return show.website ? confirmFeed(show.website, deps) : undefined;
+}
+
+async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Identified> {
+  const uuid = await pocketCastsLinkUuid(inputUrl, deps);
   const catalog = await readCatalog(uuid, deps);
   if (catalog.isPrivate) {
     throw new ResolveError("That show is private on Pocket Casts, so its feed address isn't available.");

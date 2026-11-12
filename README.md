@@ -5,6 +5,7 @@ Three small tools for podcast RSS.
 - **Locator** (`/`, the homepage) turns a Pocket Casts, Apple Podcasts, or Spotify link into the public RSS feed. `/locate` redirects here.
 - **Search** (`/search`) looks up a show in the Pocket Casts directory and links only to that show's Pocket Casts page.
 - **Feed tools** (`/tools`) reads a feed, public or private: show, files, cadence, and the tags that usually break an update. `/validator` redirects here.
+- **MCP server** (`/mcp`) gives Claude and other MCP clients the same lookups as tools, for support and debugging. Setup is at `/connect`.
 
 ## Local setup
 
@@ -33,6 +34,25 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 ### Icons and share images
 
 `npm run images` draws the favicon, the Apple and home-screen icons, and each page's share image (`opengraph-image.png`). The share images include the site name, address, and page headline, so run it again after changing any of them. It needs a prior `npm run build` (for the Inter font files), Python with Pillow, fontTools and brotli, and Google Chrome.
+
+## MCP server
+
+`POST /mcp` is a stateless, read-only MCP server over Streamable HTTP. It returns JSON and has no sessions, server-sent events, or sign-in. Add it to Claude as a custom connector, or in Claude Code:
+
+```bash
+claude mcp add --transport http podcast-tools https://podcast.space.fast/mcp
+```
+
+| Tool | What it returns |
+| --- | --- |
+| `search_pocket_casts` | Shows matching a name, with UUIDs and Pocket Casts links |
+| `get_pocket_casts_show` | Pocket Casts' catalog entry: episode count, frequency, newest and next expected episode, recent episodes |
+| `find_feed_url` | The RSS feed behind a Pocket Casts, Apple Podcasts, or Spotify link |
+| `check_feed` | The feed checker's summary and problems, for public or private feeds |
+| `list_feed_episodes` | Episodes as the feed states them, newest first, with GUIDs and files, duplicate GUIDs flagged |
+| `compare_feed_with_pocket_casts` | Feed against catalog: counts, newest on each side, episodes missing from either |
+
+Protocol code is in `lib/mcp/server.ts` and the tools are in `lib/mcp/tools.ts`. Tool calls are limited to 60 a minute per address. `/connect` lists the tools from the same definitions.
 
 ## Search
 

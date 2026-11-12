@@ -50,3 +50,22 @@ export type ValidationReport = {
   summary: FeedSummary;
   checks: Check[];
 };
+
+/** One <item> as the feed states it. */
+export type FeedEpisode = {
+  title?: string;
+  guid?: string;
+  /** ISO time, when <pubDate> parses. */
+  published?: string;
+  /** The raw <pubDate>, kept only when it doesn't parse. */
+  pubDate?: string;
+  enclosureUrl?: string;
+  enclosureType?: string;
+  enclosureLength?: number;
+  durationSeconds?: number;
+  episode?: string;
+  season?: string;
+  episodeType?: string;
+  /** <itunes:block>yes</itunes:block> on the item. */
+  blocked?: boolean;
+};

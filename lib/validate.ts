@@ -1,11 +1,11 @@
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { USER_AGENT } from "./site";
-import type { Check, CheckLevel, EnclosureKind, FeedSummary, ValidationReport } from "./types";
+import type { Check, CheckLevel, EnclosureKind, FeedEpisode, FeedSummary, ValidationReport } from "./types";
 import { describeCadence, durationSeconds, formatDuration } from "./feed-stats";
 import { imageSize } from "./image-size";
 import { FetchError, safeFetch, type BasicAuth, type SafeFetchOptions, type SafeResponse } from "./net";
 
-export type { Check, CheckLevel, ValidationReport } from "./types";
+export type { Check, CheckLevel, FeedEpisode, ValidationReport } from "./types";
 export type { BasicAuth } from "./net";
 
 export class ValidateError extends Error {
@@ -210,6 +210,15 @@ export async function validateFeed(
   fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch,
   login?: Partial<BasicAuth>
 ): Promise<ValidationReport> {
+  return (await inspectFeed(feedUrl, fetchImpl, login)).report;
+}
+
+/** The report, plus every episode as the feed states it, newest first. */
+export async function inspectFeed(
+  feedUrl: string,
+  fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch,
+  login?: Partial<BasicAuth>
+): Promise<{ report: ValidationReport; episodes: FeedEpisode[] }> {
   const checks: Check[] = [];
   const push = (id: string, level: CheckLevel, title: string, detail: string) =>
     checks.push({ id, level, title, detail });
@@ -393,6 +402,7 @@ export async function validateFeed(
   let badEnclosure = 0;
   let missingGuid = 0;
   let badDate = 0;
+  const episodes: FeedEpisode[] = [];
 
   for (const item of items) {
     const enclosure = Array.isArray(item.enclosure) ? item.enclosure[0] : item.enclosure;
@@ -414,11 +424,33 @@ export async function validateFeed(
     else guids.set(guid, (guids.get(guid) ?? 0) + 1);
 
     const pubDate = textOf(item.pubDate);
+    let publishedAt: Date | undefined;
     if (pubDate) {
       const parsed = new Date(pubDate);
       if (Number.isNaN(parsed.getTime())) badDate++;
-      else published.push(parsed);
+      else {
+        published.push(parsed);
+        publishedAt = parsed;
+      }
     }
+
+    const length = enclosure && typeof enclosure === "object"
+      ? Number(textOf((enclosure as { "@_length"?: unknown })["@_length"]))
+      : NaN;
+    episodes.push({
+      title: textOf(item.title) ?? textOf(item["itunes:title"]),
+      guid,
+      published: publishedAt?.toISOString(),
+      pubDate: pubDate && !publishedAt ? pubDate : undefined,
+      enclosureUrl: enc,
+      enclosureType: encType,
+      enclosureLength: Number.isFinite(length) && length >= 0 ? length : undefined,
+      durationSeconds: seconds,
+      episode: textOf(item["itunes:episode"]),
+      season: textOf(item["itunes:season"]),
+      episodeType: textOf(item["itunes:episodeType"])?.toLowerCase(),
+      blocked: textOf(item["itunes:block"])?.toLowerCase() === "yes" || undefined,
+    });
   }
 
   if (items.length === 0) push("episodes", "fail", "No episodes found", "The feed has no <item> entries.");
@@ -479,10 +511,21 @@ export async function validateFeed(
   };
 
   return {
-    feedUrl: response.url,
-    podcastTitle: title,
-    episodeCount: items.length,
-    summary,
-    checks,
+    report: {
+      feedUrl: response.url,
+      podcastTitle: title,
+      episodeCount: items.length,
+      summary,
+      checks,
+    },
+    episodes: newestFirst(episodes),
   };
+}
+
+/** Dated episodes newest first, then undated ones in feed order. */
+function newestFirst(episodes: FeedEpisode[]): FeedEpisode[] {
+  const dated = episodes.filter((episode) => episode.published);
+  const undated = episodes.filter((episode) => !episode.published);
+  dated.sort((a, b) => Date.parse(b.published!) - Date.parse(a.published!));
+  return [...dated, ...undated];
 }
