@@ -41,11 +41,7 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 
 ## MCP server
 
-`POST /mcp` is a stateless, read-only MCP server over Streamable HTTP. It returns JSON and has no sessions, server-sent events, or sign-in. Add `https://podcast.space.fast/mcp` as a remote server in any MCP client: a custom connector in Claude or ChatGPT, an `mcpServers` entry in an editor, or a command, for example:
-
-```bash
-claude mcp add --transport http podcast-tools https://podcast.space.fast/mcp
-```
+`POST /mcp` is a stateless, read-only MCP server over Streamable HTTP. It returns JSON and has no sessions, server-sent events, or sign-in. Add `https://podcast.space.fast/mcp` as a remote server, with the HTTP transport and no authentication, in any AI assistant or MCP client: a custom connector in an assistant's settings, an `mcpServers` entry in an editor's config, or an agent's "add MCP server" command. `/dev` shows the same, plus a `curl` call.
 
 | Tool | What it returns |
 | --- | --- |

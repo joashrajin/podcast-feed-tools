@@ -48,30 +48,30 @@ export default function DevPage() {
         <h2>Add it</h2>
         <ol className="steps">
           <li>
-            <strong>Apps with connectors</strong>
+            <strong>AI assistants</strong>
             <p>
-              In an assistant that takes custom MCP connectors, such as Claude or ChatGPT, add a
-              custom connector or app and paste the address above. Organization plans may need an
-              admin to allow it first.
+              Any assistant that accepts custom MCP servers can use it. Open its connector, app, or
+              MCP settings, add a remote server, and paste the address above. Organization plans may
+              need an admin to allow it first.
             </p>
           </li>
           <li>
             <strong>Editors and agents</strong>
             <div>
               <p>
-                Clients configured with an <code>mcpServers</code> file, such as Cursor, take a
-                remote entry like this. Some name the key <code>httpUrl</code> or ask for{" "}
+                Editors and agents configured with an <code>mcpServers</code> file take a remote
+                entry like this. Some name the key <code>httpUrl</code> or ask for{" "}
                 <code>{`"type": "http"`}</code>.
               </p>
               <pre className="endpoint"><code>{jsonConfig}</code></pre>
             </div>
           </li>
           <li>
-            <strong>Command line</strong>
-            <div>
-              <p>Clients with an add command take the address directly, for example:</p>
-              <pre className="endpoint"><code>{`claude mcp add --transport http podcast-tools ${endpoint}`}</code></pre>
-            </div>
+            <strong>Command-line agents</strong>
+            <p>
+              Agents with an &ldquo;add MCP server&rdquo; command take the address with the HTTP
+              transport. Name the server <code>podcast-tools</code>, or anything you like.
+            </p>
           </li>
           <li>
             <strong>No client</strong>
