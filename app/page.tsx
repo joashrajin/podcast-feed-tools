@@ -26,7 +26,7 @@ const faqs = [
   },
   {
     q: "Why does my browser contact Apple?",
-    a: "Matching a show by name uses Apple's public search. Your browser sends that one request, so Apple sees your address rather than a shared server address it rate-limits. Nothing else is sent, and no cookies go with it.",
+    a: "Apple's directory often refuses this site's shared server address. Your browser asks Apple for the feed behind an Apple Podcasts link, and searches by name for Pocket Casts and Spotify shows, so Apple sees your address. The site checks that feed address before showing it. No cookies are sent with the request.",
   },
   {
     q: "Can two shows with the same name get mixed up?",
@@ -58,8 +58,9 @@ export default function Home() {
           <li>
             <strong>Apple Podcasts</strong>
             <p>
-              The number after <code>id</code> in the link is the show. Apple&apos;s
-              lookup API returns <code>feedUrl</code> directly.
+              The number after <code>id</code> in the link is the show. Your browser
+              asks Apple&apos;s lookup API for <code>feedUrl</code>. This site checks
+              that the address is public before showing it.
             </p>
           </li>
           <li>
