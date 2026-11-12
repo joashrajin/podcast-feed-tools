@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "images": "python3 scripts/brand-images.py"
   },
   "dependencies": {
     "fast-xml-parser": "5.12.0",

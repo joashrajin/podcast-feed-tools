@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
 import SearchForm from "../search-form";
 
-export const metadata: Metadata = {
-  title: "Search Pocket Casts",
-  description: "Search the Pocket Casts directory and open a show on Pocket Casts.",
-};
+export const metadata: Metadata = pageMetadata({
+  title: "Search Pocket Casts for a podcast",
+  description:
+    "Search the Pocket Casts directory by show name and open the show on Pocket Casts.",
+  path: "/search",
+});
 
 export default function SearchPage() {
   return (

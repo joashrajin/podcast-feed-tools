@@ -30,6 +30,10 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 | `NEXT_PUBLIC_SITE_NAME` | Name in the header, titles, and the User-Agent. Defaults to `Podcast: Search and Tools`. A name with `: ` shows the part before it as the header mark and the rest beneath it. |
 | `NEXT_PUBLIC_SITE_URL` | Public origin, with no path. Used for metadata, `robots.txt`, the sitemap, and the User-Agent. Defaults to `https://podcast.space.fast` in production builds and `http://localhost:3000` otherwise. |
 
+### Icons and share images
+
+`npm run images` draws the favicon, the Apple and home-screen icons, and each page's share image (`opengraph-image.png`). The share images include the site name, address, and page headline, so run it again after changing any of them. It needs a prior `npm run build` (for the Inter font files), Python with Pillow, fontTools and brotli, and Google Chrome.
+
 ## Search
 
 Search posts `{ "term" }` to `https://podcast-api.pocketcasts.com/v2/search/combined`, the same call the Pocket Casts website uses. Only `type: "podcast"` rows are shown. A row with a slug links to `https://pocketcasts.com/podcast/{slug}/{uuid}`; otherwise `https://pocketcasts.com/podcasts/{uuid}`.

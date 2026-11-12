@@ -1,13 +1,19 @@
 import type { Metadata } from "next";
-import { SITE_NAME } from "@/lib/site";
+import { faqPage, pageMetadata, webApplication, webSite } from "@/lib/seo";
+import JsonLd from "./json-ld";
 import ResolverForm from "./resolver-form";
 
-export const metadata: Metadata = {
-  // The layout's title template skips a page in its own segment, so this
-  // page names the site itself.
-  title: { absolute: `Find a podcast's RSS feed · ${SITE_NAME}` },
-  description: "Turn a Pocket Casts, Apple Podcasts, or Spotify link into the show's public RSS feed.",
-};
+const description =
+  "Paste a Pocket Casts, Apple Podcasts, or Spotify link and get the show's RSS feed. Free, no sign-up. Then check the feed for problems.";
+
+export const metadata: Metadata = pageMetadata({
+  // The layout's title template skips a page in its own segment, and the
+  // search terms matter more here than the site name.
+  title: "Find a podcast's RSS feed from Pocket Casts, Apple, or Spotify",
+  absolute: true,
+  description,
+  path: "/",
+});
 
 const faqs = [
   {
@@ -29,19 +35,9 @@ const faqs = [
 ];
 
 export default function Home() {
-  const faqJsonLd = {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    mainEntity: faqs.map((faq) => ({
-      "@type": "Question",
-      name: faq.q,
-      acceptedAnswer: { "@type": "Answer", text: faq.a },
-    })),
-  };
-
   return (
     <>
-      <h1>The feed behind a show link</h1>
+      <h1>Find a podcast&apos;s RSS feed</h1>
       <p className="lede">
         Pocket Casts, Apple Podcasts, and Spotify links point at a catalog page.
         {" "}Paste one here to get the show&apos;s RSS feed, when the show is listed publicly.
@@ -87,11 +83,12 @@ export default function Home() {
           ))}
         </dl>
       </section>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify(faqJsonLd).replace(/</g, "\\u003c"),
-        }}
+      <JsonLd
+        items={[
+          webSite(),
+          webApplication("Podcast RSS feed finder", "/", description),
+          faqPage(faqs),
+        ]}
       />
     </>
   );
