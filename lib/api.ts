@@ -147,6 +147,6 @@ export async function readSubmittedFeed(
   return feed;
 }
 
-export function jsonNoStore(body: unknown, status = 200) {
-  return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
+export function jsonNoStore(body: unknown, status = 200, headers?: Record<string, string>) {
+  return NextResponse.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { lookupFromBrowser, searchFromBrowser, type AppleLookupClaim, type DirectorySearch } from "@/lib/directory";
+import { rememberReportUrl } from "@/lib/report-context";
 import { detectPlatform } from "@/lib/platforms";
 import type { MatchSource, Platform, ResolveResult } from "@/lib/types";
 
@@ -42,6 +43,10 @@ export default function ResolverForm() {
   const [copyError, setCopyError] = useState(false);
   const [hideArt, setHideArt] = useState(false);
   const requestId = useRef(0);
+
+  useEffect(() => {
+    rememberReportUrl(url);
+  }, [url]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();

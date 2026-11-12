@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import { IBM_Plex_Mono, Inter } from "next/font/google";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
+import ReportLink from "./report-link";
 import SiteHeader from "./site-header";
 import ThemeToggle from "./theme-toggle";
 import "./globals.css";
@@ -92,7 +93,9 @@ export default function RootLayout({
         <footer className="footer">
           <div className="shell">
             {SITE_NAME}. Show links resolve to public feeds only. The feed checker works with
-            private feeds too. <Link href="/connect">Use these tools with Claude</Link>.
+            private feeds too. <Link href="/connect">Use these tools with Claude</Link>
+            {" · "}
+            <ReportLink />.
           </div>
         </footer>
         <ThemeToggle />

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { rememberReportUrl } from "@/lib/report-context";
 import type { CheckLevel, ValidationReport } from "@/lib/types";
 
 const levelLabel: Record<CheckLevel, string> = {
@@ -60,6 +61,10 @@ export default function ToolsForm() {
   }, []);
 
   const initialUrl = params.get("url");
+  useEffect(() => {
+    rememberReportUrl(url);
+  }, [url]);
+
   useEffect(() => {
     if (!initialUrl || seen.current === initialUrl) return;
     seen.current = initialUrl;

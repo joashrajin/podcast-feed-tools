@@ -340,6 +340,19 @@ h2 {
 
 .input::placeholder { color: var(--muted); }
 
+textarea.input {
+  width: 100%;
+  min-height: 9rem;
+  resize: vertical;
+  display: block;
+}
+
+.field { margin-top: 1rem; }
+
+.field .input { width: 100%; }
+
+.form-actions { margin-top: 1.15rem; }
+
 .button {
   border: 0;
   background: var(--accent-fill);
