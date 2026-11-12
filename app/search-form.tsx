@@ -80,7 +80,9 @@ export default function SearchForm() {
       {shows && shows.length === 0 && (
         <p className="notice" role="status">
           Nothing on Pocket Casts matches “{query.trim()}”. If this is your show,{" "}
-          <a href={submitUrl}>submit the feed to Pocket Casts</a>.
+          <a href={submitUrl} target="_blank" rel="noopener noreferrer">
+            submit the feed to Pocket Casts<span className="sr-only"> (opens in a new tab)</span>
+          </a>.
         </p>
       )}
 
@@ -103,7 +105,11 @@ export default function SearchForm() {
                 <h2>{show.title}</h2>
                 {show.author && <p>{show.author}</p>}
                 <p>
-                  <a href={show.url}>Open in Pocket Casts</a>
+                  <a className="out-link" href={show.url} target="_blank" rel="noopener noreferrer">
+                    Open in Pocket Casts
+                    <span aria-hidden="true"> ↗</span>
+                    <span className="sr-only"> (opens in a new tab)</span>
+                  </a>
                 </p>
               </div>
             </li>
