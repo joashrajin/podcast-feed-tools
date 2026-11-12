@@ -85,11 +85,7 @@ export async function readJsonObject(
   }
 }
 
-export async function readSubmittedUrl(
-  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
-): Promise<string | NextResponse> {
-  const body = await readJsonObject(req);
-  if (body instanceof NextResponse) return body;
+function urlField(body: Record<string, unknown>): string | NextResponse {
   const url = body.url;
   if (typeof url !== "string" || !url.trim()) {
     return NextResponse.json({ error: "Missing url." }, { status: 400 });
@@ -98,6 +94,39 @@ export async function readSubmittedUrl(
     return NextResponse.json({ error: "That URL is too long." }, { status: 400 });
   }
   return url.trim();
+}
+
+export async function readSubmittedUrl(
+  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
+): Promise<string | NextResponse> {
+  const body = await readJsonObject(req);
+  if (body instanceof NextResponse) return body;
+  return urlField(body);
+}
+
+export type SubmittedFeed = { url: string; username?: string; password?: string };
+
+/** A feed URL plus an optional HTTP Basic login for a password-protected feed. */
+export async function readSubmittedFeed(
+  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
+): Promise<SubmittedFeed | NextResponse> {
+  const body = await readJsonObject(req);
+  if (body instanceof NextResponse) return body;
+  const url = urlField(body);
+  if (typeof url !== "string") return url;
+  const feed: SubmittedFeed = { url };
+  for (const key of ["username", "password"] as const) {
+    const value = body[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string" || value.length > 500) {
+      return NextResponse.json({ error: `That ${key} isn't usable.` }, { status: 400 });
+    }
+    feed[key] = value;
+  }
+  if (feed.username?.includes(":")) {
+    return NextResponse.json({ error: "A username for HTTP sign-in can't contain a colon." }, { status: 400 });
+  }
+  return feed;
 }
 
 export function jsonNoStore(body: unknown, status = 200) {

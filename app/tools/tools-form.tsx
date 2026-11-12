@@ -24,10 +24,14 @@ export default function ToolsForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginOpen, setLoginOpen] = useState(false);
+  const usernameField = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const seen = useRef<string | null>(null);
 
-  const run = useCallback(async (feedUrl: string) => {
+  const run = useCallback(async (feedUrl: string, login?: { username: string; password: string }) => {
     const current = ++requestId.current;
     setLoading(true);
     setError(null);
@@ -36,12 +40,17 @@ export default function ToolsForm() {
       const res = await fetch("/api/validate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: feedUrl }),
+        body: JSON.stringify({ url: feedUrl, ...login }),
       });
       const data = await res.json().catch(() => ({}));
       if (current !== requestId.current) return;
-      if (!res.ok) setError(typeof data.error === "string" ? data.error : "Something went wrong.");
-      else setReport(data as ValidationReport);
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Something went wrong.");
+        if (data.needsLogin === true) {
+          setLoginOpen(true);
+          requestAnimationFrame(() => usernameField.current?.focus());
+        }
+      } else setReport(data as ValidationReport);
     } catch {
       if (current !== requestId.current) return;
       setError("Network error. Try again.");
@@ -68,7 +77,7 @@ export default function ToolsForm() {
         action="#"
         onSubmit={(event) => {
           event.preventDefault();
-          void run(url);
+          void run(url, loginOpen && (username || password) ? { username, password } : undefined);
         }}
         aria-busy={loading}
       >
@@ -94,8 +103,47 @@ export default function ToolsForm() {
           </button>
         </div>
         <p id="validate-hint" className="hint">
-          Public http(s) feeds only. Private addresses are refused.
+          Private feed links work too. This site doesn&apos;t store or log the address. Local network
+          addresses are refused.
         </p>
+        <details
+          className="login"
+          open={loginOpen}
+          onToggle={(event) => setLoginOpen(event.currentTarget.open)}
+        >
+          <summary>Feed needs a username and password?</summary>
+          <div className="login-fields">
+            <div>
+              <label htmlFor="feed-username">Username</label>
+              <input
+                id="feed-username"
+                ref={usernameField}
+                className="input"
+                type="text"
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="feed-password">Password</label>
+              <input
+                id="feed-password"
+                className="input"
+                type="password"
+                autoComplete="off"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
+          </div>
+          <p className="hint">
+            Sent once to the feed&apos;s own host over HTTPS, as podcast apps do. Not stored.
+          </p>
+        </details>
       </form>
 
       {loading && (

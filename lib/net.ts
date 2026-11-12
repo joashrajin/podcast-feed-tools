@@ -43,6 +43,7 @@ export class FetchError extends Error {
       | "network"
       | "too-many-redirects"
       | "bad-redirect"
+      | "insecure-auth"
   ) {
     super(message);
     this.name = "FetchError";
@@ -233,6 +234,16 @@ export type SafeResponse = {
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
+export type BasicAuth = { username: string; password: string };
+
+/** The Authorization value for Basic credentials, UTF-8 encoded. */
+export function basicAuthorization({ username, password }: BasicAuth): string {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `Basic ${btoa(binary)}`;
+}
+
 export type SafeFetchOptions = {
   userAgent: string;
   accept?: string;
@@ -244,6 +255,11 @@ export type SafeFetchOptions = {
   method?: "GET" | "POST";
   body?: string;
   headers?: Record<string, string>;
+  /**
+   * HTTP Basic credentials. Sent only over HTTPS to the first URL's origin,
+   * and left off any hop a redirect takes to another origin.
+   */
+  basicAuth?: BasicAuth;
   allowPartial?: boolean;
   haltWhen?: (url: URL) => boolean;
   /** Test double for the HTTP exchange. Bodies are raw; Content-Encoding is honored. */
@@ -639,8 +655,19 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
     // Each hop gets the current method. A redirect can turn a POST into a GET.
     let hopOptions: SafeFetchOptions = options;
 
+    if (options.basicAuth && current.protocol !== "https:") {
+      throw new FetchError("A username and password are only sent over HTTPS.", "insecure-auth");
+    }
+    const authOrigin = current.origin;
+    const authorization = options.basicAuth ? basicAuthorization(options.basicAuth) : undefined;
+
     for (let hop = 0; hop <= maxRedirects; hop++) {
       if (deadline.aborted) throw new FetchError("The request timed out.", "timeout");
+      // Origin includes the scheme, so a redirect down to http drops it too.
+      const sendOptions: SafeFetchOptions =
+        authorization && current.origin === authOrigin
+          ? { ...hopOptions, headers: { ...hopOptions.headers, authorization } }
+          : hopOptions;
       const result = options.fetchImpl
         ? await (async () => {
             await resolvePinned(current.hostname, lookup, deadline);
@@ -648,7 +675,8 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
             try {
               response = await options.fetchImpl!(current.toString(), {
                 signal: deadline,
-                method: hopOptions.method ?? "GET",
+                method: sendOptions.method ?? "GET",
+                headers: sendOptions.headers,
               });
             } catch (err) {
               if (deadline.aborted || (err instanceof Error && err.name === "AbortError")) {
@@ -659,8 +687,8 @@ export async function safeFetch(input: string, options: SafeFetchOptions): Promi
             return stubHop(response, maxDecoded, deadline);
           })()
         : workers
-          ? await workersHop(current, hopOptions, deadline, maxDecoded)
-          : await nodeHop(current, hopOptions, lookup, deadline, maxDecoded);
+          ? await workersHop(current, sendOptions, deadline, maxDecoded)
+          : await nodeHop(current, sendOptions, lookup, deadline, maxDecoded);
 
       const location = result.headers.location;
       const redirect = [301, 302, 303, 307, 308].includes(result.status);

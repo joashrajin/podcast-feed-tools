@@ -71,7 +71,8 @@ export default function RootLayout({
         </main>
         <footer className="footer">
           <div className="shell">
-            {SITE_NAME}. Public directories only. Private and paid feeds are not returned.
+            {SITE_NAME}. Show links resolve to public feeds only. The feed checker works with
+            private feeds too.
           </div>
         </footer>
         <ThemeToggle />

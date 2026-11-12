@@ -3,11 +3,47 @@ import { USER_AGENT } from "./site";
 import type { Check, CheckLevel, EnclosureKind, FeedSummary, ValidationReport } from "./types";
 import { describeCadence, durationSeconds, formatDuration } from "./feed-stats";
 import { imageSize } from "./image-size";
-import { FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
+import { FetchError, safeFetch, type BasicAuth, type SafeFetchOptions, type SafeResponse } from "./net";
 
 export type { Check, CheckLevel, ValidationReport } from "./types";
+export type { BasicAuth } from "./net";
 
-export class ValidateError extends Error {}
+export class ValidateError extends Error {
+  /** True when the feed asked for a username and password. */
+  constructor(message: string, readonly needsLogin = false) {
+    super(message);
+  }
+}
+
+/**
+ * Take a username and password out of the URL (https://user:pass@host/feed),
+ * so they travel as a header and never appear in the report. Credentials
+ * given separately win over ones in the URL.
+ */
+export function splitCredentials(raw: string, given?: Partial<BasicAuth>): { url: string; auth?: BasicAuth } {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return { url: raw, auth: completeAuth(given) };
+  }
+  let inUrl: BasicAuth | undefined;
+  if (url.username || url.password) {
+    try {
+      inUrl = { username: decodeURIComponent(url.username), password: decodeURIComponent(url.password) };
+    } catch {
+      inUrl = { username: url.username, password: url.password };
+    }
+    url.username = "";
+    url.password = "";
+  }
+  return { url: url.toString(), auth: completeAuth(given) ?? inUrl };
+}
+
+function completeAuth(given?: Partial<BasicAuth>): BasicAuth | undefined {
+  if (!given?.username && !given?.password) return undefined;
+  return { username: given.username ?? "", password: given.password ?? "" };
+}
 
 const ITUNES_TAGS = [
   "itunes:author",
@@ -91,6 +127,11 @@ function failure(err: unknown): ValidateError {
     if (err.code === "too-many-redirects") {
       return new ValidateError("The feed redirected too many times.");
     }
+    if (err.code === "insecure-auth") {
+      return new ValidateError(
+        "A username and password are only sent over HTTPS, and this feed's address is plain HTTP. Serve the feed over HTTPS so the login can't be read in transit."
+      );
+    }
     return new ValidateError("Couldn't reach the feed URL (timeout or network error).");
   }
   return new ValidateError("Couldn't reach the feed URL (timeout or network error).");
@@ -141,31 +182,63 @@ async function artworkDimensions(
   }
 }
 
+function refusedAccess(response: SafeResponse, auth: BasicAuth | undefined): ValidateError | undefined {
+  if (response.status === 401) {
+    const scheme = headerValue(response.headers, "www-authenticate").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (scheme && scheme !== "basic") {
+      return new ValidateError(
+        `The feed asks for ${scheme} sign-in (HTTP 401). This checker can send a username and password (Basic) only, which is what podcast apps support.`
+      );
+    }
+    return new ValidateError(
+      auth
+        ? "The feed refused that username and password (HTTP 401). Check them, then try again."
+        : "The feed needs a username and password (HTTP 401). Enter them, then check again.",
+      !auth
+    );
+  }
+  if (response.status === 403 || response.status === 404 || response.status === 410) {
+    return new ValidateError(
+      `Feed returned HTTP ${response.status}. Apps can't ingest a feed that doesn't return 200. If this is a private feed link, it may have been reset, or the membership behind it may have ended.`
+    );
+  }
+  return undefined;
+}
+
 export async function validateFeed(
   feedUrl: string,
-  fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch
+  fetchImpl: (input: string, options: SafeFetchOptions) => Promise<SafeResponse> = safeFetch,
+  login?: Partial<BasicAuth>
 ): Promise<ValidationReport> {
   const checks: Check[] = [];
   const push = (id: string, level: CheckLevel, title: string, detail: string) =>
     checks.push({ id, level, title, detail });
 
+  const { url: target, auth } = splitCredentials(feedUrl, login);
+
   let response;
   try {
-    response = await fetchImpl(feedUrl, {
+    response = await fetchImpl(target, {
       userAgent: USER_AGENT,
       accept: "application/rss+xml, application/xml, text/xml, */*",
       timeoutMs: 12_000,
       maxBytes: 12_000_000,
       maxUncompressedBytes: 12_000_000,
+      ...(auth ? { basicAuth: auth } : {}),
     });
   } catch (err) {
     throw failure(err);
   }
 
+  const refused = refusedAccess(response, auth);
+  if (refused) throw refused;
   if (response.status < 200 || response.status >= 300) {
     throw new ValidateError(
       `Feed returned HTTP ${response.status}. Directories and apps can't ingest a feed that doesn't return 200.`
     );
+  }
+  if (auth) {
+    push("login", "pass", "Username and password accepted", "The feed returned 200 with the login you gave.");
   }
   push("http", "pass", "Feed is reachable", `HTTP ${response.status} from ${response.url}`);
 
@@ -253,6 +326,15 @@ export async function validateFeed(
   const title = textOf(channel.title);
   if (title) push("title", "pass", "Channel has a title", title);
   else push("title", "fail", "Missing <title>", "Apps will show a blank show name.");
+
+  if (textOf(channel["itunes:block"])?.trim().toLowerCase() === "yes") {
+    push(
+      "itunes-block",
+      "info",
+      "Hidden from Apple Podcasts",
+      "<itunes:block> is Yes, so Apple won't list the show. That's right for a private feed. Remove it if the show should be public."
+    );
+  }
 
   const description = textOf(channel.description) ?? textOf(channel["itunes:summary"]);
   if (description) {
