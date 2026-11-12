@@ -1,0 +1,8 @@
+{
+  // Spacefast serves its own placeholder at a bare /favicon.ico and points
+  // pages at ours through a rewritten link. This makes the bare path ours
+  // too. The icon is drawn by scripts/brand-images.py.
+  "meta": {
+    "favicon": "/favicon.ico"
+  }
+}
