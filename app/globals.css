@@ -459,6 +459,26 @@ h2 {
   word-break: break-all;
 }
 
+.endpoint {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.steps .endpoint { font-size: 0.84rem; }
+
+.tool-name { color: var(--muted); font-weight: 400; font-size: 0.8rem; }
+
+.prompts { margin: 0; padding-left: 1.2rem; }
+
+.prompts li { margin: 0.45rem 0; overflow-wrap: anywhere; }
+
 .text-button {
   border: 1px solid var(--field);
   border-radius: 999px;
