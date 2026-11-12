@@ -1,7 +1,15 @@
 import { USER_AGENT } from "./site";
 import type { MatchSource, Platform, ResolveResult } from "./types";
 import { appleShowId, parseShowLink, pocketCastsUuid, spotifyRef } from "./platforms";
-import { candidateLabel, pickDirectoryHit, type DirectoryHit } from "./match";
+import type { DirectoryHit } from "./match";
+import {
+  APPLE_UNREADABLE,
+  itunesHits,
+  itunesSearchUrl,
+  matchSearchResults,
+  resultFromHit,
+  type DirectorySearch,
+} from "./directory";
 import {
   looksLikeFeed,
   metaContent,
@@ -11,6 +19,14 @@ import {
 import { asHttpsUrl, assertPublicHttpUrl, FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
 
 export type { ResolveResult } from "./types";
+export type { DirectorySearch } from "./directory";
+
+/**
+ * Either the feed, or the show's name and publisher still to be matched in
+ * Apple Podcasts. The browser runs that search when the host's shared
+ * address is rate-limited by Apple.
+ */
+export type Identified = { result: ResolveResult } | { search: DirectorySearch };
 export { detectPlatform } from "./platforms";
 
 export class ResolveError extends Error {}
@@ -46,24 +62,9 @@ function publicFeedUrl(raw: string | undefined): string | undefined {
 }
 
 function fromHit(hit: DirectoryHit, matchedBy: MatchSource, platform: Platform): ResolveResult {
-  const feedUrl = publicFeedUrl(hit.feedUrl);
-  if (!feedUrl) {
-    throw new ResolveError("The directory returned a feed address that isn't a public URL.");
-  }
-  return {
-    feedUrl,
-    title: hit.title,
-    author: hit.author,
-    artwork: asHttpsUrl(hit.artwork),
-    itunesId: hit.itunesId,
-    platform,
-    matchedBy,
-  };
-}
-
-function ambiguousMessage(title: string, candidates: DirectoryHit[]): string {
-  const listed = candidates.map(candidateLabel).join("; ");
-  return `Several Apple Podcasts shows are named "${title}": ${listed}. Paste the Apple Podcasts link for the one you want.`;
+  const outcome = resultFromHit(hit, matchedBy, platform, publicFeedUrl);
+  if (!outcome.ok) throw new ResolveError(outcome.error);
+  return outcome.result;
 }
 
 /**
@@ -101,68 +102,28 @@ async function readJson(response: SafeResponse, failure: string, stage: string, 
   }
 }
 
-function mapItunes(entry: unknown): DirectoryHit {
-  if (!entry || typeof entry !== "object") return {};
-  const record = entry as Record<string, unknown>;
-  return {
-    title: typeof record.collectionName === "string" ? record.collectionName : undefined,
-    author: typeof record.artistName === "string" ? record.artistName : undefined,
-    feedUrl: typeof record.feedUrl === "string" ? record.feedUrl : undefined,
-    artwork: typeof record.artworkUrl600 === "string" ? record.artworkUrl600 : undefined,
-    itunesId: typeof record.collectionId === "number" ? record.collectionId : undefined,
-  };
-}
-
-async function searchItunes(
-  title: string,
-  author: string | undefined,
-  platform: Platform,
-  deps: ResolverDeps
-): Promise<ResolveResult> {
+/** The server-side Apple search. On Spacefast the browser runs it instead. */
+export async function searchItunes(search: DirectorySearch, deps: ResolverDeps = {}): Promise<ResolveResult> {
   const fetch = fetchWith(deps);
-  const endpoint = new URL("https://itunes.apple.com/search");
-  endpoint.searchParams.set("media", "podcast");
-  endpoint.searchParams.set("entity", "podcast");
-  endpoint.searchParams.set("limit", "50");
-  endpoint.searchParams.set("term", title.slice(0, 200));
+  const endpoint = itunesSearchUrl(search.title);
 
   let response: SafeResponse;
   try {
-    response = await fetch(endpoint.toString(), {
+    response = await fetch(endpoint, {
       userAgent: USER_AGENT,
       accept: "application/json",
       allowedHosts: ["itunes.apple.com"],
       timeoutMs: 8000,
-      maxBytes: 2_000_000,
+      maxUncompressedBytes: 2_000_000,
     });
   } catch (err) {
-    throw upstreamError(err, "Apple's directory didn't respond, so the show couldn't be matched.", "apple-search", endpoint.toString());
+    throw upstreamError(err, "Apple's directory didn't respond, so the show couldn't be matched.", "apple-search", endpoint);
   }
 
-  const data = await readJson(response, "Apple's directory returned something that couldn't be read.", "apple-search", endpoint.toString());
-  const results = (data as { results?: unknown }).results;
-  const hits = Array.isArray(results) ? results.map(mapItunes) : [];
-  const outcome = pickDirectoryHit(hits, title, author);
-
-  if (outcome.status === "match") return fromHit(outcome.hit, "itunes-search", platform);
-  if (outcome.status === "conflict") {
-    const listed = candidateLabel(outcome.hit);
-    throw new ResolveError(
-      `The publisher does not match. Apple Podcasts has "${listed}", not "${title}" by ${author ?? "the supplied publisher"}. Paste the Apple Podcasts link if that is the show you want.`
-    );
-  }
-  if (outcome.status === "ambiguous") {
-    throw new ResolveError(ambiguousMessage(title, outcome.candidates));
-  }
-  if (platform === "spotify") {
-    throw new ResolveError(
-      `Spotify doesn't publish an RSS feed, and Apple Podcasts has no show named "${title}". It may be a Spotify exclusive, or the title may differ there.`
-    );
-  }
-  const by = author ? ` ("${title}" by ${author})` : ` ("${title}")`;
-  throw new ResolveError(
-    `No public feed was listed for this show${by}. It may be private, paid, or missing from Apple Podcasts.`
-  );
+  const data = await readJson(response, APPLE_UNREADABLE, "apple-search", endpoint);
+  const outcome = matchSearchResults(data, search, publicFeedUrl);
+  if (!outcome.ok) throw new ResolveError(outcome.error);
+  return outcome.result;
 }
 
 function upstreamError(err: unknown, fallback: string, stage = "fetch", url = ""): ResolveError {
@@ -197,10 +158,8 @@ async function resolveApple(inputUrl: URL, deps: ResolverDeps): Promise<ResolveR
     throw upstreamError(err, "Apple's directory didn't respond. Try again in a moment.", "apple-lookup", endpoint.toString());
   }
 
-  const data = await readJson(response, "Apple's directory returned something that couldn't be read.", "apple-lookup", endpoint.toString());
-  const results = (data as { results?: unknown }).results;
-  const hits = Array.isArray(results) ? results.map(mapItunes) : [];
-  const podcast = hits.find((hit) => hit.feedUrl);
+  const data = await readJson(response, APPLE_UNREADABLE, "apple-lookup", endpoint.toString());
+  const podcast = itunesHits(data).find((hit) => hit.feedUrl);
   if (!podcast) {
     throw new ResolveError(
       "Apple Podcasts didn't return an RSS feed for that id. The show may not have a public feed."
@@ -240,7 +199,7 @@ async function spotifyShowMeta(
   };
 }
 
-async function resolveSpotify(inputUrl: URL, deps: ResolverDeps): Promise<ResolveResult> {
+async function identifySpotify(inputUrl: URL, deps: ResolverDeps): Promise<Identified> {
   const ref = spotifyRef(inputUrl);
   if (!ref) throw new ResolveError("That Spotify link isn't a show or an episode.");
 
@@ -297,8 +256,7 @@ async function resolveSpotify(inputUrl: URL, deps: ResolverDeps): Promise<Resolv
     throw new ResolveError("Couldn't read the show name from Spotify, so it can't be matched to a feed.");
   }
 
-  const matched = await searchItunes(title, author, "spotify", deps);
-  return { ...matched, artwork: matched.artwork ?? artwork, platform: "spotify" };
+  return { search: { title, author, platform: "spotify", artwork } };
 }
 
 type Catalog = {
@@ -391,7 +349,7 @@ async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<strin
   }
 }
 
-async function resolvePocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<ResolveResult> {
+async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Identified> {
   const fetch = fetchWith(deps);
   let pageUrl = inputUrl;
   let uuid = pocketCastsUuid(pageUrl);
@@ -437,16 +395,19 @@ async function resolvePocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Re
     throw new ResolveError("That show is private on Pocket Casts, so its feed address isn't available.");
   }
 
+  const artwork = `https://static.pocketcasts.com/discover/images/webp/480/${uuid}.webp`;
   if (catalog.feedCandidate) {
     const confirmed = await confirmFeed(catalog.feedCandidate, deps);
     if (confirmed) {
       return {
-        feedUrl: confirmed,
-        title: catalog.title,
-        author: catalog.author,
-        artwork: `https://static.pocketcasts.com/discover/images/webp/480/${uuid}.webp`,
-        platform: "pocketcasts",
-        matchedBy: "pocketcasts-catalog",
+        result: {
+          feedUrl: confirmed,
+          title: catalog.title,
+          author: catalog.author,
+          artwork,
+          platform: "pocketcasts",
+          matchedBy: "pocketcasts-catalog",
+        },
       };
     }
   }
@@ -454,22 +415,21 @@ async function resolvePocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<Re
   if (!catalog.title) {
     throw new ResolveError("Pocket Casts didn't include a title or a feed for that show.");
   }
-  const matched = await searchItunes(catalog.title, catalog.author, "pocketcasts", deps);
-  return {
-    ...matched,
-    title: matched.title ?? catalog.title,
-    author: matched.author ?? catalog.author,
-    artwork:
-      matched.artwork ??
-      `https://static.pocketcasts.com/discover/images/webp/480/${uuid}.webp`,
-    platform: "pocketcasts",
-  };
+  return { search: { title: catalog.title, author: catalog.author, platform: "pocketcasts", artwork } };
 }
 
-export async function resolveShowUrl(input: string, deps: ResolverDeps = {}): Promise<ResolveResult> {
+/** Find the show. Stops before the Apple name search, which the caller runs where it can. */
+export async function identifyShow(input: string, deps: ResolverDeps = {}): Promise<Identified> {
   const parsed = parseShowLink(input);
   if ("error" in parsed) throw new ResolveError(parsed.error);
-  if (parsed.platform === "apple") return resolveApple(parsed.url, deps);
-  if (parsed.platform === "spotify") return resolveSpotify(parsed.url, deps);
-  return resolvePocketCasts(parsed.url, deps);
+  if (parsed.platform === "apple") return { result: await resolveApple(parsed.url, deps) };
+  if (parsed.platform === "spotify") return identifySpotify(parsed.url, deps);
+  return identifyPocketCasts(parsed.url, deps);
+}
+
+/** Find the show and its feed, running the Apple name search on the server. */
+export async function resolveShowUrl(input: string, deps: ResolverDeps = {}): Promise<ResolveResult> {
+  const identified = await identifyShow(input, deps);
+  if ("result" in identified) return identified.result;
+  return searchItunes(identified.search, deps);
 }

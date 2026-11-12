@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ResolveError, resolveShowUrl } from "../lib/resolve";
+import { identifyShow, ResolveError, resolveShowUrl } from "../lib/resolve";
 import type { SafeResponse } from "../lib/net";
 
 function scripted(handlers: ((url: string) => SafeResponse | undefined)[]) {
@@ -284,5 +284,50 @@ describe("resolveShowUrl", () => {
     ]);
     const result = await resolveShowUrl("https://pocketcasts.com/podcast/desk/3782b780-0bc5-012e-fb02-00163e1b201c", { fetch });
     assert.equal(result.feedUrl, "https://example.com/feed.xml");
+  });
+
+  it("identifies a Spotify show by name and leaves the Apple search to the caller", async () => {
+    const { fetch, calls } = scripted([
+      (url) =>
+        url.startsWith("https://open.spotify.com/show/")
+          ? ok(url, `<meta property="og:title" content="The Daily"><meta property="og:description" content="Podcast · The New York Times · news"><meta property="og:image" content="https://i.scdn.co/image/abc">`, "text/html")
+          : undefined,
+    ]);
+    const identified = await identifyShow("https://open.spotify.com/show/3IM0lmZxpFAY7CwMuv9H4g", { fetch });
+    assert.deepEqual(identified, {
+      search: { title: "The Daily", author: "The New York Times", platform: "spotify", artwork: "https://i.scdn.co/image/abc" },
+    });
+    assert.equal(calls.some((url) => url.includes("itunes.apple.com")), false);
+  });
+
+  it("identifies a Pocket Casts show whose catalog address isn't a feed", async () => {
+    const show = "4eb5b260-c933-0134-10da-25324e2a541d";
+    const { fetch, calls } = scripted([
+      (url) =>
+        url.includes("podcast-api.pocketcasts.com")
+          ? ok(url, JSON.stringify({ podcast: { title: "The Daily", author: "The New York Times", url: "https://www.nytimes.com/the-daily" } }), "application/json")
+          : undefined,
+      (url) => (url.startsWith("https://www.nytimes.com/") ? ok(url, "<!doctype html><html></html>", "text/html") : undefined),
+    ]);
+    const identified = await identifyShow(`https://pocketcasts.com/podcast/the-daily/${show}`, { fetch });
+    assert.ok("search" in identified);
+    if ("search" in identified) {
+      assert.equal(identified.search.title, "The Daily");
+      assert.equal(identified.search.platform, "pocketcasts");
+      assert.equal(identified.search.artwork, `https://static.pocketcasts.com/discover/images/webp/480/${show}.webp`);
+    }
+    assert.equal(calls.some((url) => url.includes("itunes.apple.com")), false);
+  });
+
+  it("returns the feed directly when no name search is needed", async () => {
+    const { fetch } = scripted([
+      (url) =>
+        url.startsWith("https://itunes.apple.com/lookup")
+          ? ok(url, JSON.stringify({ results: [{ collectionName: "The Daily", artistName: "The New York Times", feedUrl: "https://feeds.simplecast.com/Sl5CSM3S", collectionId: 1200361736 }] }), "application/json")
+          : undefined,
+    ]);
+    const identified = await identifyShow("https://podcasts.apple.com/us/podcast/the-daily/id1200361736", { fetch });
+    assert.ok("result" in identified);
+    if ("result" in identified) assert.equal(identified.result.feedUrl, "https://feeds.simplecast.com/Sl5CSM3S");
   });
 });

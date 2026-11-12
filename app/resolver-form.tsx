@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { searchFromBrowser, type DirectorySearch } from "@/lib/directory";
 import { detectPlatform } from "@/lib/platforms";
 import type { MatchSource, Platform, ResolveResult } from "@/lib/types";
 
@@ -16,7 +17,14 @@ const sourceLabel: Record<MatchSource, string> = {
   "itunes-search": "Matched by show name in the Apple Podcasts directory.",
 };
 
-function loadingMessage(value: string): string {
+function isSearch(data: unknown): data is { search: DirectorySearch } {
+  if (!data || typeof data !== "object") return false;
+  const search = (data as { search?: unknown }).search;
+  return Boolean(search && typeof search === "object" && typeof (search as DirectorySearch).title === "string");
+}
+
+function loadingMessage(value: string, matching: boolean): string {
+  if (matching) return "Matching the show name in Apple Podcasts…";
   const platform = detectPlatform(value);
   if (platform === "apple") return "Asking Apple's lookup API…";
   if (platform === "spotify") return "Reading the Spotify show name, then matching Apple Podcasts…";
@@ -27,6 +35,7 @@ function loadingMessage(value: string): string {
 export default function ResolverForm() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [matching, setMatching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [copied, setCopied] = useState(false);
@@ -38,6 +47,7 @@ export default function ResolverForm() {
     event.preventDefault();
     const current = ++requestId.current;
     setLoading(true);
+    setMatching(false);
     setError(null);
     setResult(null);
     setCopied(false);
@@ -51,8 +61,18 @@ export default function ResolverForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (current !== requestId.current) return;
-      if (!res.ok) setError(typeof data.error === "string" ? data.error : "Something went wrong.");
-      else setResult(data as ResolveResult);
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Something went wrong.");
+      } else if (isSearch(data)) {
+        // The server found the show but leaves the name search to this browser.
+        setMatching(true);
+        const outcome = await searchFromBrowser(data.search);
+        if (current !== requestId.current) return;
+        if (outcome.ok) setResult(outcome.result);
+        else setError(outcome.error);
+      } else {
+        setResult(data as ResolveResult);
+      }
     } catch {
       if (current !== requestId.current) return;
       setError("Network error. Try again.");
@@ -109,7 +129,7 @@ export default function ResolverForm() {
 
       {loading && (
         <p className="status" role="status">
-          {loadingMessage(url)}
+          {loadingMessage(url, matching)}
         </p>
       )}
 
