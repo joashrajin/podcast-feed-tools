@@ -77,6 +77,48 @@ describe("YouTube", () => {
     assert.equal(calls.every((url) => url.includes("/feeds/videos.xml")), true);
   });
 
+  it("falls back to oEmbed when YouTube won't serve the video page", async () => {
+    let videoTries = 0;
+    const { fetch, calls } = scripted([
+      (url) => {
+        if (!url.startsWith("https://www.youtube.com/watch?")) return undefined;
+        videoTries += 1;
+        throw new FetchError("That host isn't allowed for this lookup.", "blocked");
+      },
+      (url) =>
+        url.startsWith("https://www.youtube.com/oembed?")
+          ? { url, status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ author_name: "Rick Astley", author_url: "https://www.youtube.com/@RickAstleyYT" }) }
+          : undefined,
+      (url) =>
+        url === "https://www.youtube.com/@RickAstleyYT"
+          ? page(url, `<meta property="og:title" content="Rick Astley"><meta itemprop="identifier" content="UCuAXFkgsw1L7xaCfnd5JJOw">`)
+          : undefined,
+      (url) => (url.startsWith("https://www.youtube.com/feeds/") ? xml(url, atom("Rick Astley")) : undefined),
+    ]);
+    const result = await resolveShowUrl("https://youtu.be/dQw4w9WgXcQ", { fetch });
+    assert.equal(result.feedUrl, "https://www.youtube.com/feeds/videos.xml?channel_id=UCuAXFkgsw1L7xaCfnd5JJOw");
+    assert.equal(result.title, "Rick Astley");
+    assert.equal(videoTries, 2);
+    assert.equal(calls.filter((url) => url.includes("/oembed?")).length, 1);
+  });
+
+  it("tries a channel page once more after a 429", async () => {
+    let tries = 0;
+    const { fetch } = scripted([
+      (url) => {
+        if (url !== "https://www.youtube.com/@NASA") return undefined;
+        tries += 1;
+        return tries === 1
+          ? { url, status: 429, headers: {}, body: "" }
+          : page(url, `<meta property="og:title" content="NASA"><link rel="canonical" href="https://www.youtube.com/channel/UCLA_DiR1FfKNvjuUpBHmylQ">`);
+      },
+      (url) => (url.startsWith("https://www.youtube.com/feeds/") ? xml(url, atom("NASA")) : undefined),
+    ]);
+    const result = await resolveShowUrl("https://www.youtube.com/@NASA", { fetch });
+    assert.equal(result.feedUrl, "https://www.youtube.com/feeds/videos.xml?channel_id=UCLA_DiR1FfKNvjuUpBHmylQ");
+    assert.equal(tries, 2);
+  });
+
   it("says so when the page has no channel id", async () => {
     const { fetch } = scripted([(url) => page(url, "<html>consent</html>")]);
     await assert.rejects(resolveShowUrl("https://www.youtube.com/@nobody", { fetch }), /Couldn't find the channel/);

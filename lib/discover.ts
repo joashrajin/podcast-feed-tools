@@ -113,6 +113,97 @@ export function readYouTubePage(html: string, isVideo: boolean): YouTubePage {
   };
 }
 
+/**
+ * A YouTube page's HTML. YouTube sometimes answers a shared server address
+ * with a redirect to a bot check on another host, or a 429, so each page gets
+ * one more try before giving up.
+ */
+async function youtubeHtml(pageUrl: string, deps: ResolverDeps): Promise<string> {
+  const fetch = fetchWith(deps);
+  let failure = new ResolveError("YouTube didn't respond for that link. Try again in a moment.");
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let response: SafeResponse;
+    try {
+      response = await fetch(pageUrl, {
+        userAgent: USER_AGENT,
+        accept: "text/html",
+        allowedHosts: YOUTUBE_PAGE_HOSTS,
+        // Declines the cookie banner YouTube shows to some regions, so the
+        // page itself comes back rather than a consent redirect.
+        headers: { "accept-language": "en", cookie: "SOCS=CAI" },
+        timeoutMs: 10_000,
+        // Channel pages put the feed link about 850 KB in.
+        maxUncompressedBytes: 1_500_000,
+        allowPartial: true,
+      });
+    } catch (err) {
+      failure = upstreamError(err, "YouTube didn't respond for that link. Try again in a moment.", "youtube-page", pageUrl);
+      if (err instanceof FetchError && (err.code === "blocked" || err.code === "network")) continue;
+      throw failure;
+    }
+    if (response.status === 404) throw new ResolveError("YouTube has no page at that address.");
+    if (response.status >= 200 && response.status < 300) return response.body;
+    logUpstream("youtube-page", pageUrl, { problem: "status", attempt, ...responseDetail(response) });
+    failure = new ResolveError("YouTube didn't return that page. Try again in a moment.");
+    if (response.status !== 429 && response.status < 500) break;
+  }
+  throw failure;
+}
+
+/**
+ * The channel behind a video. The video page names it in videoDetails. When
+ * YouTube won't serve that page here, its oEmbed API, a small JSON answer,
+ * still names the uploader's channel page, which is read instead.
+ */
+async function youtubeVideoChannel(videoUrl: string, deps: ResolverDeps): Promise<YouTubePage> {
+  try {
+    const page = readYouTubePage(await youtubeHtml(videoUrl, deps), true);
+    if (page.channelId) return page;
+  } catch (err) {
+    if (!(err instanceof ResolveError)) throw err;
+    if (err.message.startsWith("YouTube has no page")) throw err;
+  }
+
+  const fetch = fetchWith(deps);
+  const oembed = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
+  let response: SafeResponse;
+  try {
+    response = await fetch(oembed, {
+      userAgent: USER_AGENT,
+      accept: "application/json",
+      allowedHosts: YOUTUBE_PAGE_HOSTS,
+      timeoutMs: 8000,
+      maxBytes: 50_000,
+    });
+  } catch (err) {
+    throw upstreamError(err, "YouTube didn't respond for that video. Try again in a moment.", "youtube-oembed", oembed);
+  }
+  if (response.status === 404 || response.status === 400) throw new ResolveError("YouTube has no public video at that address.");
+  if (response.status === 401 || response.status === 403) {
+    throw new ResolveError("That video is private or can't be embedded, so its channel can't be read. Use the channel's link instead.");
+  }
+  let data: { author_url?: unknown; author_name?: unknown } = {};
+  try {
+    data = JSON.parse(response.body) as typeof data;
+  } catch {
+    data = {};
+  }
+  let authorRef: ReturnType<typeof youtubeRef>;
+  try {
+    authorRef = typeof data.author_url === "string" ? youtubeRef(new URL(data.author_url)) : undefined;
+  } catch {
+    authorRef = undefined;
+  }
+  const authorName = typeof data.author_name === "string" ? data.author_name.trim() || undefined : undefined;
+  if (authorRef?.kind === "channel") return { channelId: authorRef.id, title: authorName };
+  if (authorRef?.kind === "page" && !authorRef.url.includes("/watch?")) {
+    const page = readYouTubePage(await youtubeHtml(authorRef.url, deps), false);
+    if (page.channelId) return { ...page, title: page.title ?? authorName };
+  }
+  logUpstream("youtube-oembed", oembed, { problem: "no-channel", ...responseDetail(response) });
+  throw new ResolveError("Couldn't find the channel for that YouTube video.");
+}
+
 export async function resolveYouTube(url: URL, deps: ResolverDeps): Promise<ResolveResult> {
   const ref = youtubeRef(url);
   if (!ref) throw new ResolveError("Use a YouTube channel, handle (@name), playlist, or video link.");
@@ -126,38 +217,14 @@ export async function resolveYouTube(url: URL, deps: ResolverDeps): Promise<Reso
     return { feedUrl, title: feed.ok ? feed.title : undefined, platform: "youtube", matchedBy: "youtube-playlist" };
   }
 
-  let page: YouTubePage = {};
+  let page: YouTubePage;
   if (ref.kind === "channel") {
     page = { channelId: ref.id };
+  } else if (ref.url.includes("/watch?")) {
+    page = await youtubeVideoChannel(ref.url, deps);
   } else {
-    const fetch = fetchWith(deps);
-    let response: SafeResponse;
-    try {
-      response = await fetch(ref.url, {
-        userAgent: USER_AGENT,
-        accept: "text/html",
-        allowedHosts: YOUTUBE_PAGE_HOSTS,
-        // Declines the cookie banner YouTube shows to some regions, so the
-        // page itself comes back rather than a consent redirect.
-        headers: { "accept-language": "en", cookie: "SOCS=CAI" },
-        timeoutMs: 10_000,
-        // Channel pages put the feed link about 850 KB in.
-        maxUncompressedBytes: 1_500_000,
-        allowPartial: true,
-      });
-    } catch (err) {
-      throw upstreamError(err, "YouTube didn't respond for that link. Try again in a moment.", "youtube-page", ref.url);
-    }
-    if (response.status === 404) throw new ResolveError("YouTube has no page at that address.");
-    if (response.status < 200 || response.status >= 300) {
-      logUpstream("youtube-page", ref.url, { problem: "status", ...responseDetail(response) });
-      throw new ResolveError("YouTube didn't return that page. Try again in a moment.");
-    }
-    page = readYouTubePage(response.body, ref.url.includes("/watch?"));
-    if (!page.channelId) {
-      logUpstream("youtube-page", ref.url, { problem: "no-channel-id", ...responseDetail(response) });
-      throw new ResolveError("Couldn't find the channel on that YouTube page.");
-    }
+    page = readYouTubePage(await youtubeHtml(ref.url, deps), false);
+    if (!page.channelId) throw new ResolveError("Couldn't find the channel on that YouTube page.");
   }
 
   const channelId = page.channelId!;
