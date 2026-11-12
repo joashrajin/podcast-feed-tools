@@ -63,10 +63,10 @@ If the directory returns no show, the page says so and links to [https://pocketc
 ## How a link becomes a feed
 
 - **Pocket Casts.** `pca.st` redirects to a show id. The catalog's `url` is the RSS feed for some shows and the website for others, so it is kept only when the start of the response is an RSS channel or an Atom feed. Otherwise the title and author are matched to Apple Podcasts. A conflicting publisher is not accepted. A private show is refused.
-- **Apple Podcasts.** The `id` in a show or episode link is the show. `https://itunes.apple.com/lookup?id=` returns `feedUrl`.
+- **Apple Podcasts.** The `id` in a show or episode link is the show. The page requests `https://itunes.apple.com/lookup?id=` in the browser, which Apple allows cross-origin, and posts `feedUrl`, title, author, and artwork back. The server accepts that claim only after the same public-URL check it uses when it fetched the lookup itself, and refuses a claim that names a different show. If the browser gets no readable answer, the server does the lookup and retries once on a non-2xx status or a body that isn't JSON. Both attempts share one 8 second deadline, with a short pause before the second. A failure then asks the visitor to try again.
 - **Spotify.** Spotify does not publish RSS. A show page's `og:title` (or, for an episode, the embed's show name) is matched to the Apple Podcasts search API. One exact title is accepted. Several matches, or a conflicting publisher, are refused. No match is reported as unresolved, which is what happens for Spotify-only shows.
 
-Title matching uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own.
+Title matching uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own. On the website the browser runs that search, as it does the Apple lookup, because Apple often refuses this host's address. Pocket Casts and Spotify already took that path, so their name match does not depend on the host. Server-side callers, including the MCP tools and `resolveShowUrl`, search from the server and use the same one-retry deadline when Apple's answer can't be read.
 
 ## Fetching
 

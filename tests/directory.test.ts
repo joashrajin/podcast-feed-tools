@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { itunesSearchUrl, matchSearchResults, searchFromBrowser, type DirectorySearch } from "../lib/directory";
+import {
+  itunesLookupUrl,
+  itunesSearchUrl,
+  lookupFromBrowser,
+  matchSearchResults,
+  searchFromBrowser,
+  type DirectorySearch,
+} from "../lib/directory";
 import { asHttpUrl } from "../lib/url";
 
 const daily = {
@@ -81,6 +88,74 @@ describe("searchFromBrowser", () => {
 
     const html = await searchFromBrowser(search, (async () => new Response("<html>", { status: 200 })) as typeof fetch);
     assert.equal(html.ok, false);
-    if (!html.ok) assert.match(html.error, /couldn't be read/);
+    if (!html.ok) assert.match(html.error, /Try again in a moment/);
+  });
+});
+
+const appleShow = "https://podcasts.apple.com/us/podcast/the-daily/id1200361736?i=1000800977857";
+
+describe("lookupFromBrowser", () => {
+  it("asks Apple without cookies or a referrer and extracts the hit", async () => {
+    let seen: { url: string; init?: RequestInit } | undefined;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      seen = { url, init };
+      return json({
+        results: [{
+          ...daily,
+          artworkUrl600: "https://is1-ssl.mzstatic.com/image/art.jpg",
+        }],
+      });
+    }) as typeof fetch;
+    const outcome = await lookupFromBrowser(appleShow, fetchImpl);
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(seen?.url, itunesLookupUrl("1200361736"));
+    assert.equal(seen?.init?.credentials, "omit");
+    assert.equal(seen?.init?.referrerPolicy, "no-referrer");
+    assert.equal(outcome.claim.feedUrl, daily.feedUrl);
+    assert.equal(outcome.claim.title, "The Daily");
+    assert.equal(outcome.claim.author, "The New York Times");
+    assert.equal(outcome.claim.artwork, "https://is1-ssl.mzstatic.com/image/art.jpg");
+    assert.equal(outcome.claim.itunesId, 1200361736);
+  });
+
+  it("parses a lookup body that starts with blank lines", async () => {
+    const body = `\n\n${JSON.stringify({ results: [daily] })}`;
+    const outcome = await lookupFromBrowser(
+      appleShow,
+      (async () => new Response(body, { status: 200, headers: { "content-type": "text/javascript" } })) as typeof fetch
+    );
+    assert.equal(outcome.ok, true);
+    if (outcome.ok) assert.equal(outcome.claim.feedUrl, daily.feedUrl);
+  });
+
+  it("reports a readable lookup that lists no feed", async () => {
+    const outcome = await lookupFromBrowser(
+      appleShow,
+      (async () => json({ results: [] })) as typeof fetch
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) {
+      assert.equal(outcome.reason, "empty");
+      assert.match(outcome.error, /didn't return an RSS feed/);
+    }
+  });
+
+  it("reports a failed lookup when Apple can't be read, so the server can try", async () => {
+    const blocked = await lookupFromBrowser(appleShow, (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch);
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.reason, "failed");
+
+    const html = await lookupFromBrowser(
+      appleShow,
+      (async () => new Response("<html>", { status: 200 })) as typeof fetch
+    );
+    assert.equal(html.ok, false);
+    if (!html.ok) {
+      assert.equal(html.reason, "failed");
+      assert.match(html.error, /Try again in a moment/);
+    }
   });
 });

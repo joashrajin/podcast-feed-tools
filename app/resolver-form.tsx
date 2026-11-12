@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { searchFromBrowser, type DirectorySearch } from "@/lib/directory";
+import { lookupFromBrowser, searchFromBrowser, type AppleLookupClaim, type DirectorySearch } from "@/lib/directory";
 import { detectPlatform } from "@/lib/platforms";
 import type { MatchSource, Platform, ResolveResult } from "@/lib/types";
 
@@ -54,10 +54,25 @@ export default function ResolverForm() {
     setCopyError(false);
     setHideArt(false);
     try {
+      // Apple's lookup runs here, the same way the name search does, because
+      // the host's address is often refused. The server only checks the claim.
+      // A readable "no feed" stands. Any other miss falls through so the
+      // server can try, including its one retry.
+      let apple: AppleLookupClaim | undefined;
+      if (detectPlatform(url) === "apple") {
+        const lookedUp = await lookupFromBrowser(url);
+        if (current !== requestId.current) return;
+        if (lookedUp.ok) apple = lookedUp.claim;
+        else if (lookedUp.reason === "empty") {
+          setError(lookedUp.error);
+          return;
+        }
+      }
+
       const res = await fetch("/api/resolve", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify(apple ? { url, apple } : { url }),
       });
       const data = await res.json().catch(() => ({}));
       if (current !== requestId.current) return;

@@ -3,8 +3,10 @@ import type { MatchSource, Platform, ResolveResult } from "./types";
 import { appleShowId, parseShowLink, pocketCastsUuid, spotifyRef } from "./platforms";
 import type { DirectoryHit } from "./match";
 import {
-  APPLE_UNREADABLE,
+  APPLE_NO_FEED,
+  APPLE_TRY_AGAIN,
   itunesHits,
+  itunesLookupUrl,
   itunesSearchUrl,
   matchSearchResults,
   resultFromHit,
@@ -46,6 +48,9 @@ const POCKETCASTS_API = [
 
 export type ResolverDeps = {
   fetch?: (input: string, options: SafeFetchOptions) => Promise<SafeResponse>;
+  /** Clock for the shared Apple deadline. Tests advance it instead of waiting. */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 function fetchWith(deps: ResolverDeps) {
@@ -102,25 +107,95 @@ async function readJson(response: SafeResponse, failure: string, stage: string, 
   }
 }
 
-/** The server-side Apple search. On Spacefast the browser runs it instead. */
-export async function searchItunes(search: DirectorySearch, deps: ResolverDeps = {}): Promise<ResolveResult> {
+/** One budget for an Apple call and its single retry. Matches the old per-request timeout. */
+const APPLE_DEADLINE_MS = 8_000;
+/** Pause before the second attempt. Short enough that both fit in the deadline. */
+const APPLE_RETRY_BACKOFF_MS = 400;
+/** Don't start an attempt that has no time left to receive an answer. */
+const APPLE_MIN_ATTEMPT_MS = 500;
+
+type AppleCall = {
+  endpoint: string;
+  stage: "apple-lookup" | "apple-search";
+  maxBytes?: number;
+  maxUncompressedBytes?: number;
+  unreachable: string;
+};
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch one Apple endpoint. A non-2xx status or a body that isn't JSON is
+ * tried once more, after a short pause, if the original deadline still has
+ * room. A connection failure is not retried: the deadline is already the
+ * timeout of that attempt.
+ */
+async function readApple(call: AppleCall, deps: ResolverDeps): Promise<unknown> {
   const fetch = fetchWith(deps);
-  const endpoint = itunesSearchUrl(search.title);
+  const now = deps.now ?? Date.now;
+  const wait = deps.sleep ?? delay;
+  const started = now();
+  const remaining = () => APPLE_DEADLINE_MS - (now() - started);
+  let failure = new ResolveError(APPLE_TRY_AGAIN);
 
-  let response: SafeResponse;
-  try {
-    response = await fetch(endpoint, {
-      userAgent: USER_AGENT,
-      accept: "application/json",
-      allowedHosts: ["itunes.apple.com"],
-      timeoutMs: 8000,
-      maxUncompressedBytes: 2_000_000,
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      if (remaining() < APPLE_RETRY_BACKOFF_MS + APPLE_MIN_ATTEMPT_MS) break;
+      await wait(APPLE_RETRY_BACKOFF_MS);
+    }
+    const timeoutMs = remaining();
+    if (timeoutMs < APPLE_MIN_ATTEMPT_MS) break;
+
+    let response: SafeResponse;
+    try {
+      response = await fetch(call.endpoint, {
+        userAgent: USER_AGENT,
+        accept: "application/json",
+        allowedHosts: ["itunes.apple.com"],
+        timeoutMs,
+        maxBytes: call.maxBytes,
+        maxUncompressedBytes: call.maxUncompressedBytes,
+      });
+    } catch (err) {
+      throw upstreamError(err, call.unreachable, call.stage, call.endpoint);
+    }
+
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        return JSON.parse(response.body);
+      } catch {
+        logUpstream(call.stage, call.endpoint, {
+          problem: "not-json",
+          attempt: attempt + 1,
+          ...responseDetail(response),
+        });
+        failure = new ResolveError(APPLE_TRY_AGAIN);
+        continue;
+      }
+    }
+    logUpstream(call.stage, call.endpoint, {
+      problem: "status",
+      attempt: attempt + 1,
+      ...responseDetail(response),
     });
-  } catch (err) {
-    throw upstreamError(err, "Apple's directory didn't respond, so the show couldn't be matched.", "apple-search", endpoint);
+    failure = new ResolveError(APPLE_TRY_AGAIN);
   }
+  throw failure;
+}
 
-  const data = await readJson(response, APPLE_UNREADABLE, "apple-search", endpoint);
+/** The server-side Apple search. On the website the browser runs it instead. */
+export async function searchItunes(search: DirectorySearch, deps: ResolverDeps = {}): Promise<ResolveResult> {
+  const data = await readApple(
+    {
+      endpoint: itunesSearchUrl(search.title),
+      stage: "apple-search",
+      maxUncompressedBytes: 2_000_000,
+      unreachable: "Apple's directory didn't respond, so the show couldn't be matched.",
+    },
+    deps
+  );
   const outcome = matchSearchResults(data, search, publicFeedUrl);
   if (!outcome.ok) throw new ResolveError(outcome.error);
   return outcome.result;
@@ -140,32 +215,62 @@ function upstreamError(err: unknown, fallback: string, stage = "fetch", url = ""
 async function resolveApple(inputUrl: URL, deps: ResolverDeps): Promise<ResolveResult> {
   const id = appleShowId(inputUrl);
   if (!id) throw new ResolveError("That Apple Podcasts link has no show id.");
-  const fetch = fetchWith(deps);
-  const endpoint = new URL("https://itunes.apple.com/lookup");
-  endpoint.searchParams.set("id", id);
-  endpoint.searchParams.set("entity", "podcast");
-
-  let response: SafeResponse;
-  try {
-    response = await fetch(endpoint.toString(), {
-      userAgent: USER_AGENT,
-      accept: "application/json",
-      allowedHosts: ["itunes.apple.com"],
-      timeoutMs: 8000,
+  const data = await readApple(
+    {
+      endpoint: itunesLookupUrl(id),
+      stage: "apple-lookup",
       maxBytes: 1_000_000,
-    });
-  } catch (err) {
-    throw upstreamError(err, "Apple's directory didn't respond. Try again in a moment.", "apple-lookup", endpoint.toString());
+      unreachable: "Apple's directory didn't respond. Try again in a moment.",
+    },
+    deps
+  );
+  const podcast = itunesHits(data).find((hit) => hit.feedUrl);
+  if (!podcast) throw new ResolveError(APPLE_NO_FEED);
+  return fromHit(podcast, "itunes-lookup", "apple");
+}
+
+function textField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+/**
+ * Check a lookup the browser already ran. The feed address goes through the
+ * same public-URL check as a hit this server fetched. A claim that names a
+ * different show is refused. Nothing here contacts Apple.
+ */
+export function acceptAppleLookup(input: string, claim: unknown): ResolveResult {
+  const parsed = parseShowLink(input);
+  if ("error" in parsed) throw new ResolveError(parsed.error);
+  if (parsed.platform !== "apple") {
+    throw new ResolveError("An Apple lookup only applies to an Apple Podcasts link.");
+  }
+  const id = appleShowId(parsed.url);
+  if (!id) throw new ResolveError("That Apple Podcasts link has no show id.");
+  if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
+    throw new ResolveError("That Apple lookup wasn't usable.");
   }
 
-  const data = await readJson(response, APPLE_UNREADABLE, "apple-lookup", endpoint.toString());
-  const podcast = itunesHits(data).find((hit) => hit.feedUrl);
-  if (!podcast) {
-    throw new ResolveError(
-      "Apple Podcasts didn't return an RSS feed for that id. The show may not have a public feed."
-    );
+  const record = claim as Record<string, unknown>;
+  let itunesId = Number(id);
+  if (record.itunesId !== undefined) {
+    if (typeof record.itunesId !== "number" || !Number.isSafeInteger(record.itunesId) || String(record.itunesId) !== id) {
+      throw new ResolveError("That Apple lookup doesn't match this show.");
+    }
+    itunesId = record.itunesId;
   }
-  return fromHit(podcast, "itunes-lookup", "apple");
+  return fromHit(
+    {
+      feedUrl: textField(record.feedUrl),
+      title: textField(record.title),
+      author: textField(record.author),
+      artwork: textField(record.artwork),
+      itunesId,
+    },
+    "itunes-lookup",
+    "apple"
+  );
 }
 
 async function spotifyShowMeta(

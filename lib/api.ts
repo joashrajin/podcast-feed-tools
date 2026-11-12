@@ -104,6 +104,24 @@ export async function readSubmittedUrl(
   return urlField(body);
 }
 
+export type SubmittedResolve = { url: string; apple?: unknown };
+
+/**
+ * A show link, plus the optional Apple lookup the browser already ran.
+ * `apple` is absent when the browser didn't get a claim. The caller checks
+ * a claim; it is not trusted as a feed on its own.
+ */
+export async function readSubmittedResolve(
+  req: { headers: HeaderBag; body: ReadableStream<Uint8Array> | null }
+): Promise<SubmittedResolve | NextResponse> {
+  const body = await readJsonObject(req);
+  if (body instanceof NextResponse) return body;
+  const url = urlField(body);
+  if (typeof url !== "string") return url;
+  if (!("apple" in body) || body.apple == null) return { url };
+  return { url, apple: body.apple };
+}
+
 export type SubmittedFeed = { url: string; username?: string; password?: string };
 
 /** A feed URL plus an optional HTTP Basic login for a password-protected feed. */

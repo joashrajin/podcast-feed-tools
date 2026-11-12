@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { identifyShow, ResolveError, resolveShowUrl } from "../lib/resolve";
-import type { SafeResponse } from "../lib/net";
+import { acceptAppleLookup, identifyShow, ResolveError, resolveShowUrl, type ResolverDeps } from "../lib/resolve";
+import { FetchError, type SafeFetchOptions, type SafeResponse } from "../lib/net";
 
 function scripted(handlers: ((url: string) => SafeResponse | undefined)[]) {
   const calls: string[] = [];
@@ -329,5 +329,192 @@ describe("resolveShowUrl", () => {
     const identified = await identifyShow("https://podcasts.apple.com/us/podcast/the-daily/id1200361736", { fetch });
     assert.ok("result" in identified);
     if ("result" in identified) assert.equal(identified.result.feedUrl, "https://feeds.simplecast.com/Sl5CSM3S");
+  });
+});
+
+const APPLE = "https://podcasts.apple.com/us/podcast/the-daily/id1200361736";
+const DAILY_HIT = {
+  collectionName: "The Daily",
+  artistName: "The New York Times",
+  feedUrl: "https://feeds.simplecast.com/Sl5CSM3S",
+  artworkUrl600: "https://is1-ssl.mzstatic.com/image/art.jpg",
+  collectionId: 1200361736,
+};
+
+function lookupBody(): SafeResponse {
+  return ok(
+    "https://itunes.apple.com/lookup?id=1200361736&entity=podcast",
+    JSON.stringify({ results: [DAILY_HIT] }),
+    "application/json"
+  );
+}
+
+describe("Apple directory retry", () => {
+  it("retries one unreadable Apple lookup inside the same deadline", async () => {
+    let clock = 0;
+    let lookups = 0;
+    const timeouts: number[] = [];
+    const sleeps: number[] = [];
+    const fetch = async (input: string, options: SafeFetchOptions) => {
+      if (!input.startsWith("https://itunes.apple.com/lookup")) throw new Error(`Unexpected fetch ${input}`);
+      timeouts.push(options.timeoutMs ?? 0);
+      clock += 100;
+      lookups += 1;
+      if (lookups === 1) return { url: input, status: 403, headers: {}, body: "blocked" };
+      return lookupBody();
+    };
+    const result = await resolveShowUrl(APPLE, {
+      fetch,
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    });
+    assert.equal(result.feedUrl, DAILY_HIT.feedUrl);
+    assert.equal(result.matchedBy, "itunes-lookup");
+    assert.equal(lookups, 2);
+    assert.equal(sleeps.length, 1);
+    assert.ok(sleeps[0] > 0 && sleeps[0] < 1_000);
+    assert.equal(timeouts[0], 8_000);
+    assert.equal(timeouts[1], 8_000 - 100 - sleeps[0]);
+  });
+
+  it("retries a 200 whose body is not JSON", async () => {
+    let lookups = 0;
+    const fetch = async (input: string) => {
+      if (!input.startsWith("https://itunes.apple.com/lookup")) throw new Error(`Unexpected fetch ${input}`);
+      lookups += 1;
+      if (lookups === 1) return { url: input, status: 200, headers: { "content-type": "text/html" }, body: "<html>no</html>" };
+      return lookupBody();
+    };
+    const result = await resolveShowUrl(APPLE, { fetch, now: () => 0, sleep: async () => undefined });
+    assert.equal(result.feedUrl, DAILY_HIT.feedUrl);
+    assert.equal(lookups, 2);
+  });
+
+  it("does not start a retry once the deadline is gone", async () => {
+    let clock = 0;
+    let lookups = 0;
+    let slept = false;
+    const fetch = async (input: string) => {
+      lookups += 1;
+      clock += 7_600;
+      return { url: input, status: 503, headers: {}, body: "" };
+    };
+    await assert.rejects(
+      () => resolveShowUrl(APPLE, {
+        fetch,
+        now: () => clock,
+        sleep: async () => {
+          slept = true;
+        },
+      }),
+      (err: unknown) => err instanceof ResolveError && /Try again in a moment/.test(err.message) && !/couldn't be read/.test(err.message)
+    );
+    assert.equal(lookups, 1);
+    assert.equal(slept, false);
+  });
+
+  it("does not retry a connection failure", async () => {
+    let lookups = 0;
+    const fetch = async () => {
+      lookups += 1;
+      throw new FetchError("The connection failed.", "network");
+    };
+    await assert.rejects(
+      () => resolveShowUrl(APPLE, { fetch, sleep: async () => { throw new Error("slept"); } }),
+      (err: unknown) => err instanceof ResolveError && /didn't respond/.test(err.message)
+    );
+    assert.equal(lookups, 1);
+  });
+
+  it("retries a server-side Apple name search the same way", async () => {
+    let searches = 0;
+    const fetch = async (input: string) => {
+      if (input.startsWith("https://open.spotify.com/show/")) {
+        return ok(input, `<meta property="og:title" content="The Daily"><meta property="og:description" content="Podcast · The New York Times">`, "text/html");
+      }
+      if (input.startsWith("https://itunes.apple.com/search")) {
+        searches += 1;
+        if (searches === 1) return { url: input, status: 429, headers: {}, body: "Rate limit" };
+        return ok(input, JSON.stringify({ results: [DAILY_HIT] }), "application/json");
+      }
+      throw new Error(`Unexpected fetch ${input}`);
+    };
+    const deps: ResolverDeps = { fetch, now: () => 0, sleep: async () => undefined };
+    const result = await resolveShowUrl("https://open.spotify.com/show/3IM0lmZxpFAY7CwMuv9H4g", deps);
+    assert.equal(result.feedUrl, DAILY_HIT.feedUrl);
+    assert.equal(result.matchedBy, "itunes-search");
+    assert.equal(searches, 2);
+  });
+});
+
+describe("acceptAppleLookup", () => {
+  const claim = {
+    feedUrl: DAILY_HIT.feedUrl,
+    title: "The Daily",
+    author: "The New York Times",
+    artwork: DAILY_HIT.artworkUrl600,
+    itunesId: DAILY_HIT.collectionId,
+    extra: "ignored",
+  };
+
+  it("accepts a browser claim through the same public-URL check as a server hit", () => {
+    const result = acceptAppleLookup(APPLE, claim);
+    assert.equal(result.feedUrl, DAILY_HIT.feedUrl);
+    assert.equal(result.title, "The Daily");
+    assert.equal(result.author, "The New York Times");
+    assert.equal(result.artwork, DAILY_HIT.artworkUrl600);
+    assert.equal(result.itunesId, DAILY_HIT.collectionId);
+    assert.equal(result.platform, "apple");
+    assert.equal(result.matchedBy, "itunes-lookup");
+  });
+
+  it("stamps the show id when the claim omits it and drops artwork that isn't https", () => {
+    const result = acceptAppleLookup(`${APPLE}?i=1000800977857`, {
+      feedUrl: `  ${DAILY_HIT.feedUrl}  `,
+      title: "  The Daily  ",
+      artwork: "http://insecure.example/art.jpg",
+    });
+    assert.equal(result.feedUrl, DAILY_HIT.feedUrl);
+    assert.equal(result.title, "The Daily");
+    assert.equal(result.artwork, undefined);
+    assert.equal(result.itunesId, DAILY_HIT.collectionId);
+  });
+
+  it("refuses a feed address that isn't public", () => {
+    for (const feedUrl of [
+      "http://127.0.0.1/feed.xml",
+      "http://169.254.169.254/latest/meta-data",
+      "http://localhost/feed.xml",
+      "http://10.1.2.3/feed.xml",
+      "http://[::1]/feed.xml",
+      "https://user:pass@feeds.example.com/feed.xml",
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+    ]) {
+      assert.throws(
+        () => acceptAppleLookup(APPLE, { ...claim, feedUrl }),
+        (err: unknown) => err instanceof ResolveError && /isn't a public URL/.test(err.message)
+      );
+    }
+  });
+
+  it("refuses a claim for a different show, a non-object, or a non-Apple link", () => {
+    assert.throws(
+      () => acceptAppleLookup(APPLE, { ...claim, itunesId: 1 }),
+      (err: unknown) => err instanceof ResolveError && /doesn't match this show/.test(err.message)
+    );
+    for (const bad of [null, [], "feed", 5]) {
+      assert.throws(
+        () => acceptAppleLookup(APPLE, bad),
+        (err: unknown) => err instanceof ResolveError && /wasn't usable/.test(err.message)
+      );
+    }
+    assert.throws(
+      () => acceptAppleLookup("https://open.spotify.com/show/3IM0lmZxpFAY7CwMuv9H4g", claim),
+      (err: unknown) => err instanceof ResolveError && /only applies to an Apple Podcasts link/.test(err.message)
+    );
   });
 });
