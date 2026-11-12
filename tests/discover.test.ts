@@ -77,7 +77,7 @@ describe("YouTube", () => {
     assert.equal(calls.every((url) => url.includes("/feeds/videos.xml")), true);
   });
 
-  it("falls back to oEmbed when YouTube won't serve the video page", async () => {
+  it("reads a video's channel through oEmbed without loading the video page", async () => {
     let videoTries = 0;
     const { fetch, calls } = scripted([
       (url) => {
@@ -98,8 +98,22 @@ describe("YouTube", () => {
     const result = await resolveShowUrl("https://youtu.be/dQw4w9WgXcQ", { fetch });
     assert.equal(result.feedUrl, "https://www.youtube.com/feeds/videos.xml?channel_id=UCuAXFkgsw1L7xaCfnd5JJOw");
     assert.equal(result.title, "Rick Astley");
-    assert.equal(videoTries, 2);
+    assert.equal(videoTries, 0);
     assert.equal(calls.filter((url) => url.includes("/oembed?")).length, 1);
+  });
+
+  it("falls back to the video page when oEmbed has no answer", async () => {
+    const { fetch } = scripted([
+      (url) => (url.startsWith("https://www.youtube.com/oembed?") ? { url, status: 500, headers: {}, body: "" } : undefined),
+      (url) =>
+        url.startsWith("https://www.youtube.com/watch?")
+          ? page(url, `"videoDetails":{"videoId":"dQw4w9WgXcQ","channelId":"UCuAXFkgsw1L7xaCfnd5JJOw","author":"Rick Astley"}`)
+          : undefined,
+      (url) => (url.startsWith("https://www.youtube.com/feeds/") ? xml(url, atom("Rick Astley")) : undefined),
+    ]);
+    const result = await resolveShowUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ", { fetch });
+    assert.equal(result.feedUrl, "https://www.youtube.com/feeds/videos.xml?channel_id=UCuAXFkgsw1L7xaCfnd5JJOw");
+    assert.equal(result.title, "Rick Astley");
   });
 
   it("tries a channel page once more after a 429", async () => {

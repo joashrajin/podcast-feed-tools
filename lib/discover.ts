@@ -151,22 +151,16 @@ async function youtubeHtml(pageUrl: string, deps: ResolverDeps): Promise<string>
 }
 
 /**
- * The channel behind a video. The video page names it in videoDetails. When
- * YouTube won't serve that page here, its oEmbed API, a small JSON answer,
- * still names the uploader's channel page, which is read instead.
+ * The channel behind a video. YouTube's oEmbed API, a small JSON answer,
+ * names the uploader's channel page, and the channel id is read there. That
+ * comes first because YouTube redirects this host's requests for video pages
+ * to a bot check. The video page, which names the channel in videoDetails,
+ * is the fallback when oEmbed has no answer.
  */
 async function youtubeVideoChannel(videoUrl: string, deps: ResolverDeps): Promise<YouTubePage> {
-  try {
-    const page = readYouTubePage(await youtubeHtml(videoUrl, deps), true);
-    if (page.channelId) return page;
-  } catch (err) {
-    if (!(err instanceof ResolveError)) throw err;
-    if (err.message.startsWith("YouTube has no page")) throw err;
-  }
-
   const fetch = fetchWith(deps);
   const oembed = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
-  let response: SafeResponse;
+  let response: SafeResponse | undefined;
   try {
     response = await fetch(oembed, {
       userAgent: USER_AGENT,
@@ -176,31 +170,41 @@ async function youtubeVideoChannel(videoUrl: string, deps: ResolverDeps): Promis
       maxBytes: 50_000,
     });
   } catch (err) {
-    throw upstreamError(err, "YouTube didn't respond for that video. Try again in a moment.", "youtube-oembed", oembed);
+    upstreamError(err, "", "youtube-oembed", oembed);
+    response = undefined;
   }
-  if (response.status === 404 || response.status === 400) throw new ResolveError("YouTube has no public video at that address.");
-  if (response.status === 401 || response.status === 403) {
+  if (response?.status === 404 || response?.status === 400) {
+    throw new ResolveError("YouTube has no public video at that address.");
+  }
+  if (response?.status === 401 || response?.status === 403) {
     throw new ResolveError("That video is private or can't be embedded, so its channel can't be read. Use the channel's link instead.");
   }
-  let data: { author_url?: unknown; author_name?: unknown } = {};
-  try {
-    data = JSON.parse(response.body) as typeof data;
-  } catch {
-    data = {};
+
+  let authorName: string | undefined;
+  if (response && response.status >= 200 && response.status < 300) {
+    let data: { author_url?: unknown; author_name?: unknown } = {};
+    try {
+      data = JSON.parse(response.body) as typeof data;
+    } catch {
+      data = {};
+    }
+    let authorRef: ReturnType<typeof youtubeRef>;
+    try {
+      authorRef = typeof data.author_url === "string" ? youtubeRef(new URL(data.author_url)) : undefined;
+    } catch {
+      authorRef = undefined;
+    }
+    authorName = typeof data.author_name === "string" ? data.author_name.trim() || undefined : undefined;
+    if (authorRef?.kind === "channel") return { channelId: authorRef.id, title: authorName };
+    if (authorRef?.kind === "page" && !authorRef.url.includes("/watch?")) {
+      const page = readYouTubePage(await youtubeHtml(authorRef.url, deps), false);
+      if (page.channelId) return { ...page, title: page.title ?? authorName };
+    }
+    logUpstream("youtube-oembed", oembed, { problem: "no-channel", ...responseDetail(response) });
   }
-  let authorRef: ReturnType<typeof youtubeRef>;
-  try {
-    authorRef = typeof data.author_url === "string" ? youtubeRef(new URL(data.author_url)) : undefined;
-  } catch {
-    authorRef = undefined;
-  }
-  const authorName = typeof data.author_name === "string" ? data.author_name.trim() || undefined : undefined;
-  if (authorRef?.kind === "channel") return { channelId: authorRef.id, title: authorName };
-  if (authorRef?.kind === "page" && !authorRef.url.includes("/watch?")) {
-    const page = readYouTubePage(await youtubeHtml(authorRef.url, deps), false);
-    if (page.channelId) return { ...page, title: page.title ?? authorName };
-  }
-  logUpstream("youtube-oembed", oembed, { problem: "no-channel", ...responseDetail(response) });
+
+  const page = readYouTubePage(await youtubeHtml(videoUrl, deps), true);
+  if (page.channelId) return { ...page, title: page.title ?? authorName };
   throw new ResolveError("Couldn't find the channel for that YouTube video.");
 }
 
