@@ -5,7 +5,7 @@ import { INSTRUCTIONS, tools } from "@/lib/mcp/tools";
 import { rateLimit, retryAfterSeconds } from "@/lib/rate-limit";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
 
-// Claude's connectors call from shared addresses, so tool calls get more
+// Hosted AI assistants call from shared addresses, so tool calls get more
 // room than the website's forms. Listing tools and initializing aren't counted.
 const TOOL_CALLS_PER_MINUTE = 60;
 const MAX_BODY = 65_536;
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 export function GET() {
   return NextResponse.json(
     {
-      error: `This is the ${SITE_NAME} MCP endpoint. Add it to Claude or another MCP client as a remote server: ${SITE_URL}/mcp. Setup: ${SITE_URL}/connect`,
+      error: `This is the ${SITE_NAME} MCP endpoint. Add it to any AI assistant or MCP client as a remote server: ${SITE_URL}/mcp. Setup: ${SITE_URL}/dev`,
     },
     { status: 405, headers: { ...HEADERS, allow: "POST, OPTIONS" } }
   );

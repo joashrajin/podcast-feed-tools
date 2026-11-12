@@ -1,11 +1,11 @@
 # Podcast: Search and Tools
 
-Three small tools for podcast RSS.
+Small tools for finding and checking RSS feeds.
 
-- **Locator** (`/`, the homepage) turns a Pocket Casts, Apple Podcasts, or Spotify link into the public RSS feed. `/locate` redirects here.
+- **Locator** (`/`, the homepage) turns a link into its public RSS feed: Pocket Casts, Apple Podcasts, and Spotify shows, YouTube channels and playlists, SoundCloud accounts, and any blog or website. `/locate` redirects here. How each source works is on `/faq`.
 - **Search** (`/search`) looks up a show in the Pocket Casts directory and links only to that show's Pocket Casts page.
 - **Feed tools** (`/tools`) reads a feed, public or private: show, files, cadence, and the tags that usually break an update. `/validator` redirects here.
-- **MCP server** (`/mcp`) gives Claude and other MCP clients the same lookups as tools, for support and debugging. Setup is at `/connect`.
+- **MCP server** (`/mcp`) gives any AI assistant or MCP client the same lookups as tools, for support and debugging. Setup is at `/dev`, which `/connect` redirects to.
 
 ## Local setup
 
@@ -41,7 +41,7 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 
 ## MCP server
 
-`POST /mcp` is a stateless, read-only MCP server over Streamable HTTP. It returns JSON and has no sessions, server-sent events, or sign-in. Add it to Claude as a custom connector, or in Claude Code:
+`POST /mcp` is a stateless, read-only MCP server over Streamable HTTP. It returns JSON and has no sessions, server-sent events, or sign-in. Add `https://podcast.space.fast/mcp` as a remote server in any MCP client: a custom connector in Claude or ChatGPT, an `mcpServers` entry in an editor, or a command, for example:
 
 ```bash
 claude mcp add --transport http podcast-tools https://podcast.space.fast/mcp
@@ -51,12 +51,12 @@ claude mcp add --transport http podcast-tools https://podcast.space.fast/mcp
 | --- | --- |
 | `search_pocket_casts` | Shows matching a name, with UUIDs and Pocket Casts links |
 | `get_pocket_casts_show` | Pocket Casts' catalog entry: episode count, frequency, newest and next expected episode, recent episodes |
-| `find_feed_url` | The RSS feed behind a Pocket Casts, Apple Podcasts, or Spotify link |
+| `find_feed_url` | The RSS feed behind a podcast, YouTube, SoundCloud, or website link |
 | `check_feed` | The feed checker's summary and problems, for public or private feeds |
 | `list_feed_episodes` | Episodes as the feed states them, newest first, with GUIDs and files, duplicate GUIDs flagged |
 | `compare_feed_with_pocket_casts` | Feed against catalog: counts, newest on each side, episodes missing from either |
 
-Protocol code is in `lib/mcp/server.ts` and the tools are in `lib/mcp/tools.ts`. Tool calls are limited to 60 a minute per address. `/connect` lists the tools from the same definitions.
+Protocol code is in `lib/mcp/server.ts` and the tools are in `lib/mcp/tools.ts`. Tool calls are limited to 60 a minute per address. `/dev` lists the tools from the same definitions.
 
 ## Search
 
@@ -69,6 +69,10 @@ If the directory returns no show, the page says so and links to [https://pocketc
 - **Pocket Casts.** `pca.st` redirects to a show id. The catalog's `url` is the RSS feed for some shows and the website for others, so it is kept only when the start of the response is an RSS channel or an Atom feed. Otherwise the title and author are matched to Apple Podcasts. A conflicting publisher is not accepted. A private show is refused.
 - **Apple Podcasts.** The `id` in a show or episode link is the show. The page requests `https://itunes.apple.com/lookup?id=` in the browser, which Apple allows cross-origin, and posts `feedUrl`, title, author, and artwork back. The server accepts that claim only after the same public-URL check it uses when it fetched the lookup itself, and refuses a claim that names a different show. If the browser gets no readable answer, the server does the lookup and retries once on a non-2xx status or a body that isn't JSON. Both attempts share one 8 second deadline, with a short pause before the second. A failure then asks the visitor to try again.
 - **Spotify.** Spotify does not publish RSS. A show page's `og:title` (or, for an episode, the embed's show name) is matched to the Apple Podcasts search API. One exact title is accepted. Several matches, or a conflicting publisher, are refused. No match is reported as unresolved, which is what happens for Spotify-only shows.
+
+- **YouTube.** Channels and public playlists have Atom feeds at `https://www.youtube.com/feeds/videos.xml?channel_id=` or `?playlist_id=`. A `/channel/` or playlist link is used as is. A handle, `/c/`, `/user/`, or video link is fetched for its channel id: the channel page's own feed `<link>`, or a video's `videoDetails`. The request declines YouTube's cookie banner so a consent redirect doesn't replace the page. The feeds list videos, not audio, so podcast apps can't play them.
+- **SoundCloud.** Every account has `https://feeds.soundcloud.com/users/soundcloud:users:{id}/sounds.rss`. A profile, track, or `on.soundcloud.com` link leads to the profile page, whose `soundcloud://users:{id}` gives the id. The feed is fetched to confirm it. It includes only the tracks the creator adds to RSS, so an empty feed is reported as such.
+- **Blogs and websites.** Any other address. A link that already answers as RSS or Atom is returned. Otherwise the page's `<link rel="alternate">` feeds are read, comment feeds last, and the first that answers becomes the main one. A page that lists none is tried against known patterns (Substack, Medium, Tumblr, Blogger, WordPress.com, Ghost, Reddit, GitHub releases), then common paths such as `/feed`, `/rss.xml`, `/atom.xml`, and `/index.xml`, under the page's own path first. Candidates are fetched at once, so a site costs at most about 15 requests. The code is in `lib/discover.ts`.
 
 Title matching uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own. On the website the browser runs that search, as it does the Apple lookup, because Apple often refuses this host's address. Pocket Casts and Spotify already took that path, so their name match does not depend on the host. Server-side callers, including the MCP tools and `resolveShowUrl`, search from the server and use the same one-retry deadline when Apple's answer can't be read.
 

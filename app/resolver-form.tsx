@@ -10,13 +10,33 @@ const platformLabel: Record<Platform, string> = {
   pocketcasts: "Pocket Casts",
   apple: "Apple Podcasts",
   spotify: "Spotify",
+  youtube: "YouTube",
+  soundcloud: "SoundCloud",
+  website: "Website",
 };
 
 const sourceLabel: Record<MatchSource, string> = {
   "pocketcasts-catalog": "Feed address taken from the Pocket Casts catalog.",
   "itunes-lookup": "Feed address returned by Apple's lookup API.",
   "itunes-search": "Matched by show name in the Apple Podcasts directory.",
+  "soundcloud-profile": "SoundCloud's feed for this account.",
+  "youtube-channel": "YouTube's feed for this channel. It lists videos, not audio files.",
+  "youtube-playlist": "YouTube's feed for this playlist. It lists videos, not audio files.",
+  direct: "This link is already a feed.",
+  "page-link": "Listed by the page itself.",
+  "known-pattern": "The usual feed address for this host.",
+  "common-path": "Found at a common feed address on the site.",
 };
+
+// One real link per source. A chip fills it in and runs it.
+const examples: { label: string; color: string; url: string }[] = [
+  { label: "Pocket Casts", color: "#f43e37", url: "https://pocketcasts.com/podcast/the-daily/4eb5b260-c933-0134-10da-25324e2a541d" },
+  { label: "Apple Podcasts", color: "#a35cf0", url: "https://podcasts.apple.com/us/podcast/the-daily/id1200361736" },
+  { label: "Spotify", color: "#1db954", url: "https://open.spotify.com/show/3IM0lmZxpFAY7CwMuv9H4g" },
+  { label: "YouTube", color: "#ff2a2a", url: "https://www.youtube.com/@NASA" },
+  { label: "SoundCloud", color: "#ff6a1a", url: "https://soundcloud.com/startalk" },
+  { label: "Blogs & websites", color: "#3d8bfd", url: "https://joash.blog" },
+];
 
 function isSearch(data: unknown): data is { search: DirectorySearch } {
   if (!data || typeof data !== "object") return false;
@@ -26,11 +46,22 @@ function isSearch(data: unknown): data is { search: DirectorySearch } {
 
 function loadingMessage(value: string, matching: boolean): string {
   if (matching) return "Matching the show name in Apple Podcasts…";
-  const platform = detectPlatform(value);
-  if (platform === "apple") return "Asking Apple's lookup API…";
-  if (platform === "spotify") return "Reading the Spotify show name, then matching Apple Podcasts…";
-  if (platform === "pocketcasts") return "Reading the Pocket Casts catalog…";
-  return "Resolving…";
+  switch (detectPlatform(value)) {
+    case "apple":
+      return "Asking Apple's lookup API…";
+    case "spotify":
+      return "Reading the Spotify show name…";
+    case "pocketcasts":
+      return "Reading the Pocket Casts catalog…";
+    case "youtube":
+      return "Finding the YouTube channel…";
+    case "soundcloud":
+      return "Reading the SoundCloud profile…";
+    case "website":
+      return "Looking for feeds on that site…";
+    default:
+      return "Finding the feed…";
+  }
 }
 
 export default function ResolverForm() {
@@ -43,13 +74,13 @@ export default function ResolverForm() {
   const [copyError, setCopyError] = useState(false);
   const [hideArt, setHideArt] = useState(false);
   const requestId = useRef(0);
+  const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     rememberReportUrl(url);
   }, [url]);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function run(link: string) {
     const current = ++requestId.current;
     setLoading(true);
     setMatching(false);
@@ -64,8 +95,8 @@ export default function ResolverForm() {
       // A readable "no feed" stands. Any other miss falls through so the
       // server can try, including its one retry.
       let apple: AppleLookupClaim | undefined;
-      if (detectPlatform(url) === "apple") {
-        const lookedUp = await lookupFromBrowser(url);
+      if (detectPlatform(link) === "apple") {
+        const lookedUp = await lookupFromBrowser(link);
         if (current !== requestId.current) return;
         if (lookedUp.ok) apple = lookedUp.claim;
         else if (lookedUp.reason === "empty") {
@@ -77,7 +108,7 @@ export default function ResolverForm() {
       const res = await fetch("/api/resolve", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(apple ? { url, apple } : { url }),
+        body: JSON.stringify(apple ? { url: link, apple } : { url: link }),
       });
       const data = await res.json().catch(() => ({}));
       if (current !== requestId.current) return;
@@ -101,6 +132,17 @@ export default function ResolverForm() {
     }
   }
 
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    void run(url);
+  }
+
+  function tryExample(link: string) {
+    setUrl(link);
+    input.current?.focus();
+    void run(link);
+  }
+
   async function copyFeed() {
     if (!result) return;
     try {
@@ -114,18 +156,21 @@ export default function ResolverForm() {
   }
 
   return (
-    <div className="form">
+    <div className="finder">
       <form
         onSubmit={submit}
         aria-busy={loading}
         // A native submit reloads the page. The handler always cancels it.
         action="#"
       >
-        <label htmlFor="show-url">Show link</label>
-        <div className="form-row">
+        <label htmlFor="show-url" className="sr-only">
+          Link to a podcast, YouTube channel, SoundCloud profile, or website
+        </label>
+        <div className="finder-box">
           <input
+            ref={input}
             id="show-url"
-            className="input"
+            className="finder-input"
             type="text"
             inputMode="url"
             autoCapitalize="off"
@@ -134,18 +179,33 @@ export default function ResolverForm() {
             required
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://podcasts.apple.com/…"
+            placeholder="Paste any link"
             aria-invalid={error ? true : undefined}
-            aria-describedby={error ? "resolve-error" : "resolve-hint"}
+            aria-describedby={error ? "resolve-error" : undefined}
           />
           <button className="button" type="submit" disabled={loading}>
-            {loading ? "Resolving" : "Resolve"}
+            {loading ? "Finding" : "Find feed"}
           </button>
         </div>
-        <p id="resolve-hint" className="hint">
-          pca.st · pocketcasts.com · podcasts.apple.com · open.spotify.com
-        </p>
       </form>
+
+      <ul className="examples" aria-label="Try an example">
+        {examples.map((example) => (
+          <li key={example.label}>
+            <button
+              type="button"
+              className="chip"
+              onClick={() => tryExample(example.url)}
+              disabled={loading}
+              aria-label={`Try a ${example.label} link`}
+              style={{ "--dot": example.color } as React.CSSProperties}
+            >
+              <span className="chip-dot" aria-hidden="true" />
+              {example.label}
+            </button>
+          </li>
+        ))}
+      </ul>
 
       {loading && (
         <p className="status" role="status">
@@ -174,9 +234,9 @@ export default function ResolverForm() {
               onError={() => setHideArt(true)}
             />
           )}
-          <div>
+          <div className={result.artwork && !hideArt ? undefined : "result-wide"}>
             <p className="result-kicker">{platformLabel[result.platform]}</p>
-            <h2>{result.title ?? "Podcast"}</h2>
+            <h2>{result.title ?? "Feed"}</h2>
             {result.author && <p className="byline">{result.author}</p>}
             <div className="feed-line">
               <p className="feed-label">RSS feed</p>
@@ -191,6 +251,26 @@ export default function ResolverForm() {
               <p className="hint" role="status">
                 Copy failed. Select the address above.
               </p>
+            )}
+            {result.note && <p className="hint">{result.note}</p>}
+            {result.otherFeeds && result.otherFeeds.length > 0 && (
+              <details className="other-feeds">
+                <summary>
+                  {result.otherFeeds.length === 1
+                    ? "1 more feed on this page"
+                    : `${result.otherFeeds.length} more feeds on this page`}
+                </summary>
+                <ul>
+                  {result.otherFeeds.map((feed) => (
+                    <li key={feed.url}>
+                      {feed.title && <span>{feed.title}</span>}
+                      <a className="feed-url" href={feed.url} rel="noopener noreferrer" target="_blank">
+                        {feed.url}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
             <p className="result-meta">
               {sourceLabel[result.matchedBy]}{" "}

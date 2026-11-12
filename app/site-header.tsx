@@ -4,10 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SITE_MARK, SITE_TAGLINE } from "@/lib/site";
 
-const links = [
-  { href: "/", label: "Find a feed" },
+// `short` is shown on phones, where five full labels don't fit.
+const links: { href: string; label: string; short?: string }[] = [
+  { href: "/", label: "Find a feed", short: "Find" },
   { href: "/search", label: "Search" },
-  { href: "/tools", label: "Check a feed" },
+  { href: "/tools", label: "Check a feed", short: "Check" },
+  { href: "/faq", label: "FAQ" },
+  { href: "/dev", label: "Dev" },
 ];
 
 // The favicon's red feed tile, drawn inline so it costs no request. Same
@@ -42,8 +45,22 @@ export default function SiteHeader() {
           {links.map((link) => {
             const current = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
             return (
-              <Link key={link.href} href={link.href} aria-current={current ? "page" : undefined}>
-                {link.label}
+              <Link
+                key={link.href}
+                href={link.href}
+                aria-current={current ? "page" : undefined}
+                aria-label={link.short ? link.label : undefined}
+              >
+                {link.short ? (
+                  <>
+                    <span className="nav-long">{link.label}</span>
+                    <span className="nav-short" aria-hidden="true">
+                      {link.short}
+                    </span>
+                  </>
+                ) : (
+                  link.label
+                )}
               </Link>
             );
           })}

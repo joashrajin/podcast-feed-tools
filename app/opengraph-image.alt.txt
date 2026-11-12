@@ -1,1 +1,1 @@
-Find a podcast's RSS feed from a Pocket Casts, Apple Podcasts, or Spotify link.
+Find the RSS feed behind a podcast, YouTube channel, SoundCloud profile, or website.

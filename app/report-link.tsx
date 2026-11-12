@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export default function ReportLink() {
+/** Links to the report form with the current page filled in. */
+export default function ReportLink({ children = "Report an issue" }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const href = `/report?page=${encodeURIComponent(pathname || "/")}`;
-  return <Link href={href}>Report an issue</Link>;
+  return <Link href={href}>{children}</Link>;
 }

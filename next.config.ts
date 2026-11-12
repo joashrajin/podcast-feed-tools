@@ -3,8 +3,12 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   images: { unoptimized: true },
   async redirects() {
-    // The feed finder was at /locate before it became the homepage.
-    return [{ source: "/locate", destination: "/", permanent: true }];
+    return [
+      // The feed finder was at /locate before it became the homepage.
+      { source: "/locate", destination: "/", permanent: true },
+      // The MCP setup page was "Use with Claude" at /connect. It covers any client now.
+      { source: "/connect", destination: "/dev", permanent: true },
+    ];
   },
   async headers() {
     return [

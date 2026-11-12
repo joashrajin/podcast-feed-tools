@@ -42,9 +42,19 @@ DOT = ((19, 45), 5)
 # Share images, one per page. Keep the headlines in step with each page's h1.
 CARDS = {
     APP: (
-        "Find a podcast’s RSS feed",
-        "Paste a Pocket Casts, Apple Podcasts, or Spotify link and get the show’s feed.",
-        "Find a podcast's RSS feed from a Pocket Casts, Apple Podcasts, or Spotify link.",
+        "Find any RSS feed",
+        "Podcasts, YouTube channels, SoundCloud creators, and blogs.",
+        "Find the RSS feed behind a podcast, YouTube channel, SoundCloud profile, or website.",
+    ),
+    APP / "faq": (
+        "How links become feeds",
+        "Pocket Casts, Apple, Spotify, YouTube, SoundCloud, and websites.",
+        "How podcast, YouTube, SoundCloud, and website links are turned into RSS feeds.",
+    ),
+    APP / "dev": (
+        "Connect any AI assistant",
+        "An open MCP server for finding and checking RSS feeds.",
+        "Connect any AI assistant or MCP client to find and check RSS feeds.",
     ),
     APP / "tools": (
         "Check a podcast RSS feed",

@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import Link from "next/link";
 import { IBM_Plex_Mono, Inter } from "next/font/google";
-import { SITE_NAME, SITE_URL } from "@/lib/site";
+import { REPO_URL, SITE_NAME, SITE_URL } from "@/lib/site";
 import ReportLink from "./report-link";
 import SiteHeader from "./site-header";
 import ThemeToggle from "./theme-toggle";
@@ -32,7 +31,7 @@ export const metadata: Metadata = {
     template: `%s · ${SITE_NAME}`,
   },
   description:
-    "Turn a show link into its RSS feed, search Pocket Casts, and check a feed.",
+    "Find the RSS feed behind a podcast, YouTube channel, SoundCloud profile, or website. Search Pocket Casts and check a feed.",
   keywords: [
     "podcast rss feed",
     "find podcast rss feed",
@@ -41,6 +40,9 @@ export const metadata: Metadata = {
     "spotify podcast rss",
     "podcast feed validator",
     "podcast rss checker",
+    "youtube rss feed",
+    "soundcloud rss feed",
+    "find rss feed of website",
   ],
   // Lets search results show the full share image and snippet.
   robots: {
@@ -55,7 +57,7 @@ export const metadata: Metadata = {
     locale: "en",
     title: SITE_NAME,
     description:
-      "Resolve a Pocket Casts, Apple Podcasts, or Spotify link to the show's public RSS feed, and check a feed for the problems that stop it updating.",
+      "Find the RSS feed behind a podcast, YouTube channel, SoundCloud profile, or website, and check a feed for the problems that stop it updating.",
   },
   twitter: { card: "summary_large_image" },
   formatDetection: { telephone: false, email: false, address: false },
@@ -91,11 +93,19 @@ export default function RootLayout({
           {children}
         </main>
         <footer className="footer">
-          <div className="shell">
-            {SITE_NAME}. Show links resolve to public feeds only. The feed checker works with
-            private feeds too. <Link href="/connect">Use these tools with Claude</Link>
-            {" · "}
-            <ReportLink />.
+          <div className="shell footer-row">
+            <p>
+              Found a bug or have an idea?{" "}
+              <a href={`${REPO_URL}/issues`}>Open an issue on GitHub</a>, or{" "}
+              <ReportLink>send a quick report</ReportLink>.
+            </p>
+            <p className="footer-meta">
+              Powered by <a href="https://spacefast.com">Spacefast</a>
+              <span aria-hidden="true"> · </span>
+              Created by <a href="https://joash.blog">Joash</a>
+              <span aria-hidden="true"> · </span>
+              <a href={REPO_URL}>Source on GitHub</a>
+            </p>
           </div>
         </footer>
         <ThemeToggle />
