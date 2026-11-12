@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 import { SITE_MARK, SITE_TAGLINE } from "@/lib/site";
 
 const links = [
-  { href: "/", label: "Search" },
-  { href: "/locate", label: "Find a feed" },
+  { href: "/", label: "Find a feed" },
+  { href: "/search", label: "Search" },
   { href: "/tools", label: "Check a feed" },
 ];
 

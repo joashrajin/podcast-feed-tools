@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     template: `%s · ${SITE_NAME}`,
   },
   description:
-    "Search Pocket Casts, turn a show link into an RSS feed, and check a public feed.",
+    "Turn a show link into its RSS feed, search Pocket Casts, and check a feed.",
   keywords: [
     "podcast rss feed",
     "pocket casts rss",

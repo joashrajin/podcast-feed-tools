@@ -2,9 +2,9 @@
 
 Three small tools for podcast RSS.
 
-- **Search** (`/`) looks up a show in the Pocket Casts directory and links only to that show's Pocket Casts page.
-- **Locator** (`/locate`) turns a Pocket Casts, Apple Podcasts, or Spotify link into the public RSS feed.
-- **Feed tools** (`/tools`) reads a public feed: show, files, cadence, and the tags that usually break an update. `/validator` redirects here.
+- **Locator** (`/`, the homepage) turns a Pocket Casts, Apple Podcasts, or Spotify link into the public RSS feed. `/locate` redirects here.
+- **Search** (`/search`) looks up a show in the Pocket Casts directory and links only to that show's Pocket Casts page.
+- **Feed tools** (`/tools`) reads a feed, public or private: show, files, cadence, and the tags that usually break an update. `/validator` redirects here.
 
 ## Local setup
 
