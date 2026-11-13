@@ -547,12 +547,12 @@ textarea.input {
   transition: transform 120ms ease, border-color 120ms ease;
 }
 
-.chip:hover:not(:disabled) {
+.chip:hover {
   border-color: var(--field);
   transform: translateY(-1px);
 }
 
-.chip:disabled { opacity: 0.6; cursor: progress; }
+.chip[aria-pressed="true"] { border-color: var(--dot); }
 
 .chip-dot {
   width: 0.55rem;

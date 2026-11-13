@@ -28,14 +28,15 @@ const sourceLabel: Record<MatchSource, string> = {
   "common-path": "Found at a common feed address on the site.",
 };
 
-// One real link per source. A chip fills it in and runs it.
-const examples: { label: string; color: string; url: string }[] = [
-  { label: "Pocket Casts", color: "#f43e37", url: "https://pocketcasts.com/podcast/the-daily/4eb5b260-c933-0134-10da-25324e2a541d" },
-  { label: "Apple Podcasts", color: "#a35cf0", url: "https://podcasts.apple.com/us/podcast/the-daily/id1200361736" },
-  { label: "Spotify", color: "#1db954", url: "https://open.spotify.com/show/3IM0lmZxpFAY7CwMuv9H4g" },
-  { label: "YouTube", color: "#ff2a2a", url: "https://www.youtube.com/@NASA" },
-  { label: "SoundCloud", color: "#ff6a1a", url: "https://soundcloud.com/startalk" },
-  { label: "Blogs & websites", color: "#3d8bfd", url: "https://joash.blog" },
+// The sources the finder knows. A chip puts the cursor in the box and shows
+// what that source's link looks like, without changing what's typed.
+const sources: { label: string; color: string; hint: string }[] = [
+  { label: "Pocket Casts", color: "#f43e37", hint: "pca.st/… or pocketcasts.com/podcast/…" },
+  { label: "Apple Podcasts", color: "#a35cf0", hint: "podcasts.apple.com/…/id123456789" },
+  { label: "Spotify", color: "#1db954", hint: "open.spotify.com/show/…" },
+  { label: "YouTube", color: "#ff2a2a", hint: "youtube.com/@channel" },
+  { label: "SoundCloud", color: "#ff6a1a", hint: "soundcloud.com/artist" },
+  { label: "Blogs & websites", color: "#3d8bfd", hint: "example.com" },
 ];
 
 function isSearch(data: unknown): data is { search: DirectorySearch } {
@@ -73,6 +74,7 @@ export default function ResolverForm() {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [hideArt, setHideArt] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
   const requestId = useRef(0);
   const input = useRef<HTMLInputElement>(null);
 
@@ -137,10 +139,9 @@ export default function ResolverForm() {
     void run(url);
   }
 
-  function tryExample(link: string) {
-    setUrl(link);
+  function pickSource(sourceHint: string) {
+    setHint(sourceHint);
     input.current?.focus();
-    void run(link);
   }
 
   async function copyFeed() {
@@ -179,7 +180,7 @@ export default function ResolverForm() {
             required
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="Paste any link"
+            placeholder={hint ?? "Paste any link"}
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? "resolve-error" : undefined}
           />
@@ -189,19 +190,19 @@ export default function ResolverForm() {
         </div>
       </form>
 
-      <ul className="examples" aria-label="Try an example">
-        {examples.map((example) => (
-          <li key={example.label}>
+      <ul className="examples" aria-label="Supported sources">
+        {sources.map((source) => (
+          <li key={source.label}>
             <button
               type="button"
               className="chip"
-              onClick={() => tryExample(example.url)}
-              disabled={loading}
-              aria-label={`Try a ${example.label} link`}
-              style={{ "--dot": example.color } as React.CSSProperties}
+              onClick={() => pickSource(source.hint)}
+              aria-pressed={hint === source.hint}
+              aria-label={`Paste a ${source.label} link`}
+              style={{ "--dot": source.color } as React.CSSProperties}
             >
               <span className="chip-dot" aria-hidden="true" />
-              {example.label}
+              {source.label}
             </button>
           </li>
         ))}

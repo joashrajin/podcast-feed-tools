@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     // Spacefast deploy output and state. Generated, never committed.
     ".open-next/**",
     ".spacefast/**",
+    // Agent worktrees are separate checkouts with their own config.
+    ".claude/**",
   ]),
 ]);
 
