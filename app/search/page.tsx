@@ -5,7 +5,7 @@ import SearchForm from "../search-form";
 export const metadata: Metadata = pageMetadata({
   title: "Search Pocket Casts for a podcast",
   description:
-    "Search the Pocket Casts directory by show name and open the show on Pocket Casts.",
+    "Search the Pocket Casts podcast directory by show name and open any show on Pocket Casts. Free, no sign-up, nothing to install.",
   path: "/search",
 });
 

@@ -1,5 +1,7 @@
+import Link from "next/link";
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Inter } from "next/font/google";
+import { SOURCE_PAGES } from "@/lib/source-pages";
 import { REPO_URL, SITE_NAME, SITE_URL } from "@/lib/site";
 import ReportLink from "./report-link";
 import SiteHeader from "./site-header";
@@ -44,6 +46,8 @@ export const metadata: Metadata = {
     "soundcloud rss feed",
     "find rss feed of website",
   ],
+  // Proves ownership to Google Search Console. The value is public by design.
+  verification: { google: "CyXoyELngRZ_f4wq6f2v7Rk_BR0uV30n4xawskq_DIY" },
   // Lets search results show the full share image and snippet.
   robots: {
     index: true,
@@ -94,6 +98,15 @@ export default function RootLayout({
         </main>
         <footer className="footer">
           <div className="shell footer-row">
+            <nav aria-label="Find a feed by source">
+              <ul className="source-links">
+                {SOURCE_PAGES.map((page) => (
+                  <li key={page.slug}>
+                    <Link href={`/${page.slug}`}>{page.name} RSS</Link>
+                  </li>
+                ))}
+              </ul>
+            </nav>
             <p>
               Found a bug or have an idea?{" "}
               <a href={`${REPO_URL}/issues`}>Open an issue on GitHub</a>, or{" "}

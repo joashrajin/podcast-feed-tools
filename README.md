@@ -3,6 +3,7 @@
 Small tools for finding and checking RSS feeds.
 
 - **Locator** (`/`, the homepage) turns a link into its public RSS feed: Pocket Casts, Apple Podcasts, and Spotify shows, YouTube channels and playlists, SoundCloud accounts, and any blog or website. `/locate` redirects here. How each source works is on `/faq`.
+- **Source pages** (`/youtube-rss-feed`, `/soundcloud-rss-feed`, `/apple-podcasts-rss-feed`, `/spotify-podcast-rss-feed`, `/pocket-casts-rss-feed`, `/website-rss-feed`) are landing pages for each kind of link: the same finder, the link formats that work, and what to expect from the feed. Their text is in `lib/source-pages.ts`; keep it in step with what the resolvers handle. Every page's footer links to them.
 - **Search** (`/search`) looks up a show in the Pocket Casts directory and links only to that show's Pocket Casts page.
 - **Feed tools** (`/tools`) reads a feed, public or private: show, files, cadence, and the tags that usually break an update. `/validator` redirects here.
 - **MCP server** (`/mcp`) gives any AI assistant or MCP client the same lookups as tools, for support and debugging. Setup is at `/dev`, which `/connect` redirects to.

@@ -30,7 +30,7 @@ const prompts = [
 export default function DevPage() {
   return (
     <>
-      <h1>Dev</h1>
+      <h1>Connect an AI assistant</h1>
       <p className="lede">
         Every tool on this site is also an MCP server, so any AI assistant or MCP client can use it.
         Ask about a feed while you work instead of looking it up by hand.

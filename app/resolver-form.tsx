@@ -68,7 +68,8 @@ function loadingMessage(value: string, matching: boolean, checking: boolean): st
   }
 }
 
-export default function ResolverForm() {
+/** `placeholder` replaces "Paste any link" on a page about one source. */
+export default function ResolverForm({ placeholder = "Paste any link" }: { placeholder?: string } = {}) {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [matching, setMatching] = useState(false);
@@ -198,7 +199,7 @@ export default function ResolverForm() {
             required
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder={hint ?? "Paste any link"}
+            placeholder={hint ?? placeholder}
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? "resolve-error" : undefined}
           />

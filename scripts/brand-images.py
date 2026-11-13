@@ -66,6 +66,36 @@ CARDS = {
         "Find a show by name and open it on Pocket Casts.",
         "Search the Pocket Casts directory and open a show on Pocket Casts.",
     ),
+    APP / "youtube-rss-feed": (
+        "YouTube RSS feeds",
+        "Any channel, handle, playlist, or video.",
+        "Find the RSS feed of a YouTube channel or playlist.",
+    ),
+    APP / "soundcloud-rss-feed": (
+        "SoundCloud RSS feeds",
+        "Any profile, track, or short link.",
+        "Find the RSS feed of a SoundCloud account.",
+    ),
+    APP / "apple-podcasts-rss-feed": (
+        "Apple Podcasts RSS feeds",
+        "The feed behind any show or episode link.",
+        "Find the RSS feed behind an Apple Podcasts show.",
+    ),
+    APP / "spotify-podcast-rss-feed": (
+        "Spotify podcast RSS feeds",
+        "The public feed behind a Spotify show.",
+        "Find the public RSS feed of a podcast on Spotify.",
+    ),
+    APP / "pocket-casts-rss-feed": (
+        "Pocket Casts RSS feeds",
+        "The feed behind any show or share link.",
+        "Find the RSS feed behind a Pocket Casts show.",
+    ),
+    APP / "website-rss-feed": (
+        "Website RSS feeds",
+        "Blogs, news sites, Substack, Medium, and more.",
+        "Find the RSS or Atom feed of any website or blog.",
+    ),
 }
 
 
