@@ -3,7 +3,7 @@
 // itself because Apple rate-limits the shared address the host's servers
 // leave from.
 
-import { candidateLabel, pickDirectoryHit, type DirectoryHit } from "./match";
+import { candidateLabel, candidateList, pickDirectoryHit, type DirectoryHit } from "./match";
 import { appleShowId } from "./platforms";
 import type { MatchSource, Platform, ResolveResult } from "./types";
 import { asHttpsUrl, asHttpUrl } from "./url";
@@ -17,9 +17,14 @@ export type DirectorySearch = {
   artwork?: string;
   /** The feed's podcast:guid, when Pocket Casts has it. Lets Podcast Index skip the name match. */
   podcastGuid?: string;
+  /** The Pocket Casts show, so same-named shows can be told apart by its newest episode. */
+  pocketCastsUuid?: string;
 };
 
-export type DirectoryOutcome = { ok: true; result: ResolveResult } | { ok: false; error: string };
+export type DirectoryOutcome =
+  | { ok: true; result: ResolveResult }
+  /** `candidates` is set when several shows fit, for a caller that can tell them apart. */
+  | { ok: false; error: string; candidates?: DirectoryHit[] };
 
 /** Returns the feed address to report, or undefined to refuse it. */
 export type FeedUrlCheck = (raw: string | undefined) => string | undefined;
@@ -136,10 +141,10 @@ export function matchSearchResults(
     };
   }
   if (outcome.status === "ambiguous") {
-    const listed = outcome.candidates.map(candidateLabel).join("; ");
     return {
       ok: false,
-      error: `Several Apple Podcasts shows are named "${title}": ${listed}. Paste the Apple Podcasts link for the one you want.`,
+      error: `Several Apple Podcasts shows are named "${title}": ${candidateList(outcome.candidates)}. Paste the Apple Podcasts link for the one you want.`,
+      candidates: outcome.candidates,
     };
   }
   if (platform === "spotify") {

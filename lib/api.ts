@@ -104,7 +104,7 @@ export async function readSubmittedUrl(
   return urlField(body);
 }
 
-export type SubmittedResolve = { url: string; apple?: unknown };
+export type SubmittedResolve = { url: string; apple?: unknown; candidates?: unknown[] };
 
 /**
  * A show link, plus the optional Apple lookup the browser already ran.
@@ -118,6 +118,7 @@ export async function readSubmittedResolve(
   if (body instanceof NextResponse) return body;
   const url = urlField(body);
   if (typeof url !== "string") return url;
+  if (Array.isArray(body.candidates)) return { url, candidates: body.candidates.slice(0, 4) };
   if (!("apple" in body) || body.apple == null) return { url };
   return { url, apple: body.apple };
 }

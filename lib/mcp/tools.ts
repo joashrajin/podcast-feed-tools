@@ -346,7 +346,7 @@ export function tools(deps: ToolDeps = {}): Tool[] {
           if (!feedUrl && show.title) {
             try {
               const found = await findFeedByName(
-                { title: show.title, author: show.author, platform: "pocketcasts", podcastGuid: show.podcastGuid },
+                { title: show.title, author: show.author, platform: "pocketcasts", podcastGuid: show.podcastGuid, pocketCastsUuid: uuid },
                 resolverDeps
               );
               feedUrl = found.feedUrl;

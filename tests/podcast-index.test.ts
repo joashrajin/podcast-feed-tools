@@ -3,7 +3,15 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import type { SafeFetchOptions, SafeResponse } from "../lib/net";
 import { podcastIndexKeys, signedHeaders, type PodcastIndexKeys } from "../lib/podcast-index";
-import { findFeedByName, NameSearchIncomplete, ResolveError, resolveShowUrl, type ResolverDeps } from "../lib/resolve";
+import {
+  candidateHits,
+  findFeedByName,
+  NameSearchIncomplete,
+  resolveAmongCandidates,
+  ResolveError,
+  resolveShowUrl,
+  type ResolverDeps,
+} from "../lib/resolve";
 import type { DirectorySearch } from "../lib/directory";
 
 const KEYS: PodcastIndexKeys = { key: "UXKCGDSYGUUEVQJSYDZH", secret: "yzJe2eE7XV-3eY576dyRZ6wXyAbndh6LUrCZ8KN|" };
@@ -236,5 +244,107 @@ describe("findFeedByName", () => {
     const result = await findFeedByName({ ...DAILY, podcastGuid: GUID }, deps());
     assert.equal(result.feedUrl, INDEX_FEED);
     assert.equal(result.matchedBy, "podcastindex-search");
+  });
+});
+
+describe("telling same-named shows apart by Pocket Casts' newest episode", () => {
+  const uuid = "12012c20-0423-012e-f9a0-00163e1b201c";
+  const SYSK = { title: "Stuff You Should Know", author: "iHeartPodcasts", platform: "pocketcasts" as const, pocketCastsUuid: uuid };
+  const OMNY = "https://www.omnycontent.com/d/playlist/sysk/podcast.rss";
+  const ACAST = "https://feeds.acast.com/public/shows/sysk-copy";
+  const NEWEST = "https://podtrac.com/pts/redirect.mp3/traffic.omny.fm/d/clips/sysk/manatees.mp3";
+
+  const catalogRoute: Route = (url) =>
+    url.includes(`/podcast/full/${uuid}`)
+      ? json(url, {
+          podcast: {
+            title: "Stuff You Should Know",
+            author: "iHeartPodcasts",
+            url: "https://www.iheart.com/podcast/stuff-you-should-know",
+            is_private: false,
+            episodes: [
+              { uuid: "e2", title: "The World Needs More Manatees", published: "2026-11-12T10:00:00Z", url: `${NEWEST}?updated=1` },
+              { uuid: "e1", title: "Short Stuff", published: "2026-11-11T10:00:00Z", url: "https://podtrac.com/older.mp3" },
+            ],
+          },
+        })
+      : undefined;
+  const feed = (url: string, enclosures: string[]): Route => (requested) =>
+    requested === url
+      ? {
+          url,
+          status: 200,
+          headers: { "content-type": "application/rss+xml" },
+          body: `<?xml version="1.0"?><rss version="2.0"><channel><title>Stuff You Should Know</title>${enclosures
+            .map((file) => `<item><title>x</title><enclosure url="${file.replace(/&/g, "&amp;")}" type="audio/mpeg" length="1"/></item>`)
+            .join("")}</channel></rss>`,
+        }
+      : undefined;
+  const sysk = (url: string, itunesId: number) => ({ ...nyt(url, itunesId), title: "Stuff You Should Know", author: "iHeartPodcasts" });
+
+  it("picks the feed that has Pocket Casts' newest episode file, ignoring its query string", async () => {
+    const { deps } = stub(
+      indexSearch([sysk(OMNY, 278981407), sysk(ACAST, 6804056378)]),
+      catalogRoute,
+      feed(OMNY, [`${NEWEST}?updated=2&amp=1`, "https://podtrac.com/older.mp3"]),
+      feed(ACAST, [])
+    );
+    const result = await findFeedByName(SYSK, deps());
+    assert.equal(result.feedUrl, OMNY);
+    assert.equal(result.matchedBy, "podcastindex-search");
+    assert.match(result.note ?? "", /Pocket Casts' newest episode/);
+  });
+
+  it("does the same when the shows come from Apple's search", async () => {
+    const { deps } = stub(
+      appleSearch(200, [
+        { collectionName: "Stuff You Should Know", artistName: "iHeartPodcasts", feedUrl: ACAST, collectionId: 6804056378 },
+        { collectionName: "Stuff You Should Know", artistName: "iHeartPodcasts", feedUrl: OMNY, collectionId: 278981407 },
+      ]),
+      catalogRoute,
+      feed(OMNY, [NEWEST]),
+      (url) => (url === ACAST ? { url, status: 404, headers: {}, body: "" } : undefined)
+    );
+    const result = await findFeedByName(SYSK, deps(null));
+    assert.equal(result.feedUrl, OMNY);
+    assert.equal(result.matchedBy, "itunes-search");
+  });
+
+  it("still lists both, with their feed addresses, when both feeds have the episode", async () => {
+    const { deps } = stub(
+      indexSearch([sysk(OMNY, 278981407), sysk(ACAST, 6804056378)]),
+      catalogRoute,
+      feed(OMNY, [NEWEST]),
+      feed(ACAST, [NEWEST])
+    );
+    await assert.rejects(
+      () => findFeedByName(SYSK, deps()),
+      (err: unknown) =>
+        err instanceof ResolveError &&
+        err.message.includes(`Stuff You Should Know — iHeartPodcasts (${OMNY}); Stuff You Should Know — iHeartPodcasts (${ACAST})`)
+    );
+  });
+
+  it("doesn't read the Pocket Casts catalog for a show that didn't come from Pocket Casts", async () => {
+    const { deps, to } = stub(indexSearch([sysk(OMNY, 1), sysk(ACAST, 2)]));
+    await assert.rejects(() => findFeedByName({ ...SYSK, platform: "spotify", pocketCastsUuid: undefined }, deps()), /Several shows/);
+    assert.equal(to("https://podcast-api.pocketcasts.com"), 0);
+  });
+
+  it("accepts a browser's candidates only when they carry the show's title and a public address", async () => {
+    const { deps, calls } = stub(catalogRoute, feed(OMNY, [NEWEST]), feed(ACAST, []));
+    const hits = candidateHits([
+      { title: "Something Else", author: "iHeartPodcasts", feedUrl: "https://evil.example.com/feed.xml" },
+      { title: "Stuff You Should Know", feedUrl: "http://127.0.0.1/feed.xml" },
+      { title: "Stuff You Should Know", author: "iHeartPodcasts", feedUrl: OMNY, itunesId: "278981407" },
+      { title: "Stuff You Should Know", author: "iHeartPodcasts", feedUrl: ACAST },
+      { title: "Stuff You Should Know", feedUrl: "https://fifth.example.com/feed.xml" },
+      "not an object",
+    ]);
+    assert.equal(hits.length, 4);
+    assert.equal(hits[2].itunesId, undefined);
+    const result = await resolveAmongCandidates(SYSK, hits, "itunes-search", deps());
+    assert.equal(result?.feedUrl, OMNY);
+    assert.equal(calls.some((call) => call.url.includes("evil.example.com") || call.url.includes("127.0.0.1")), false);
   });
 });

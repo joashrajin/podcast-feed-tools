@@ -1,7 +1,7 @@
 import { USER_AGENT } from "./site";
 import type { MatchSource, Platform, ResolveResult } from "./types";
 import { appleShowId, parseShowLink, pocketCastsUuid, spotifyRef } from "./platforms";
-import { candidateLabel, type DirectoryHit } from "./match";
+import { candidateLabel, candidateList, normalizeName, type DirectoryHit } from "./match";
 import {
   APPLE_NO_FEED,
   APPLE_TRY_AGAIN,
@@ -13,6 +13,8 @@ import {
   type DirectorySearch,
 } from "./directory";
 import {
+  attr,
+  decodeEntities,
   looksLikeFeed,
   metaContent,
   spotifyEmbedEntity,
@@ -168,8 +170,23 @@ export async function searchItunes(search: DirectorySearch, deps: ResolverDeps =
     deps
   );
   const outcome = matchSearchResults(data, search, publicFeedUrl);
-  if (!outcome.ok) throw new ResolveError(outcome.error);
+  if (!outcome.ok) {
+    throw outcome.candidates
+      ? new AmbiguousShow(outcome.error, outcome.candidates, "itunes-search")
+      : new ResolveError(outcome.error);
+  }
   return outcome.result;
+}
+
+/** Several shows fit the name and publisher. The candidates let a caller tell them apart. */
+export class AmbiguousShow extends ResolveError {
+  constructor(
+    message: string,
+    readonly candidates: DirectoryHit[],
+    readonly source: MatchSource
+  ) {
+    super(message);
+  }
 }
 
 async function resolveApple(inputUrl: URL, deps: ResolverDeps): Promise<ResolveResult> {
@@ -592,6 +609,7 @@ async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<I
       platform: "pocketcasts",
       artwork,
       podcastGuid: catalog.podcastGuid,
+      pocketCastsUuid: uuid,
     },
   };
 }
@@ -679,6 +697,17 @@ function byLine(search: DirectorySearch): string {
  * isn't set up.
  */
 export async function findFeedByName(search: DirectorySearch, deps: ResolverDeps = {}): Promise<ResolveResult> {
+  try {
+    return await matchByName(search, deps);
+  } catch (err) {
+    if (!(err instanceof AmbiguousShow) || !search.pocketCastsUuid) throw err;
+    const picked = await resolveAmongCandidates(search, err.candidates, err.source, deps);
+    if (picked) return picked;
+    throw err;
+  }
+}
+
+async function matchByName(search: DirectorySearch, deps: ResolverDeps): Promise<ResolveResult> {
   const keys = keysFor(deps);
   let index: "off" | "none" | "unavailable" = "off";
   if (keys) {
@@ -699,8 +728,10 @@ export async function findFeedByName(search: DirectorySearch, deps: ResolverDeps
         );
       }
       if (outcome.status === "ambiguous") {
-        throw new ResolveError(
-          `Several shows are named "${search.title}": ${outcome.candidates.map(candidateLabel).join("; ")}. Use the Apple Podcasts link or the feed URL for the one you want.`
+        throw new AmbiguousShow(
+          `Several shows are named "${search.title}": ${candidateList(outcome.candidates)}. Use the Apple Podcasts link or the feed URL for the one you want.`,
+          outcome.candidates,
+          "podcastindex-search"
         );
       }
       index = "none";
@@ -722,6 +753,91 @@ export async function findFeedByName(search: DirectorySearch, deps: ResolverDeps
     }[index];
     throw new NameSearchIncomplete(message, search);
   }
+}
+
+const withoutQuery = (url: string) => url.split(/[?#]/, 1)[0];
+
+/** Whether the feed lists one of these audio files. Only the start of a long feed is read. */
+async function feedCarries(feedUrl: string, files: Set<string>, deps: ResolverDeps): Promise<boolean> {
+  try {
+    const response = await fetchWith(deps)(feedUrl, {
+      userAgent: USER_AGENT,
+      accept: "application/rss+xml, application/xml, text/xml",
+      timeoutMs: 8000,
+      maxBytes: 2_000_000,
+      maxUncompressedBytes: 2_000_000,
+      allowPartial: true,
+    });
+    if (response.status < 200 || response.status >= 300) return false;
+    for (const tag of response.body.match(/<enclosure\b[^>]*>/gi) ?? []) {
+      const raw = attr(tag, "url");
+      if (!raw) continue;
+      const file = decodeEntities(raw).trim();
+      if (files.has(file) || files.has(withoutQuery(file))) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Candidates the browser sent back, read field by field. Anything else is dropped. */
+export function candidateHits(raw: unknown[]): DirectoryHit[] {
+  const hits: DirectoryHit[] = [];
+  for (const item of raw.slice(0, 4)) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const field = (key: string) =>
+      typeof record[key] === "string" && (record[key] as string).length <= 2000 ? (record[key] as string) : undefined;
+    hits.push({
+      title: field("title"),
+      author: field("author"),
+      feedUrl: field("feedUrl"),
+      artwork: field("artwork"),
+      itunesId: typeof record.itunesId === "number" && Number.isInteger(record.itunesId) ? record.itunesId : undefined,
+    });
+  }
+  return hits;
+}
+
+const NEWEST_EPISODE_NOTE =
+  "Several shows share this name. This is the one whose feed has Pocket Casts' newest episode.";
+
+/**
+ * Pick, among same-named shows, the feed that has the audio files of the
+ * Pocket Casts show's newest episodes. That is the feed Pocket Casts reads.
+ * Undefined unless exactly one candidate has them. Candidates must carry the
+ * show's own title, so a claim from the browser can't swap in another show.
+ */
+export async function resolveAmongCandidates(
+  search: DirectorySearch,
+  candidates: DirectoryHit[],
+  source: MatchSource,
+  deps: ResolverDeps = {}
+): Promise<ResolveResult | undefined> {
+  if (!search.pocketCastsUuid) return undefined;
+  const wanted = normalizeName(search.title);
+  const usable: DirectoryHit[] = [];
+  for (const candidate of candidates.slice(0, 4)) {
+    const feedUrl = publicFeedUrl(candidate.feedUrl);
+    if (!feedUrl || !candidate.title || normalizeName(candidate.title) !== wanted) continue;
+    if (usable.some((hit) => hit.feedUrl === feedUrl)) continue;
+    usable.push({ ...candidate, feedUrl });
+  }
+  if (usable.length < 2) return undefined;
+
+  const show = await readPocketCastsShow(search.pocketCastsUuid, deps);
+  const files = new Set<string>();
+  for (const episode of show.episodes.filter((item) => item.url).slice(0, 3)) {
+    files.add(episode.url!);
+    files.add(withoutQuery(episode.url!));
+  }
+  if (files.size === 0) return undefined;
+
+  const carries = await Promise.all(usable.map((hit) => feedCarries(hit.feedUrl!, files, deps)));
+  const matching = usable.filter((_, index) => carries[index]);
+  if (matching.length !== 1) return undefined;
+  return { ...indexResult(matching[0], matching[0].feedUrl!, source, search), note: NEWEST_EPISODE_NOTE };
 }
 
 /** Find the show and its feed, matching a name on the server. */

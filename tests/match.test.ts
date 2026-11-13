@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { normalizeName, pickDirectoryHit, samePublisher, type DirectoryHit } from "../lib/match";
+import { candidateList, normalizeName, pickDirectoryHit, samePublisher, type DirectoryHit } from "../lib/match";
 
 const daily: DirectoryHit = {
   title: "The Daily",
@@ -91,5 +91,18 @@ describe("pickDirectoryHit", () => {
     const outcome = pickDirectoryHit([one, daily], "The Daily", "The New York Times");
     assert.equal(outcome.status, "match");
     if (outcome.status === "match") assert.equal(outcome.hit.itunesId, 1200361736);
+  });
+});
+
+describe("candidateList", () => {
+  it("adds the feed address only where two candidates would read the same", () => {
+    assert.equal(
+      candidateList([
+        { title: "Stuff You Should Know", author: "iHeartPodcasts", feedUrl: "https://a.example.com/rss" },
+        { title: "Stuff You Should Know", author: "iHeartPodcasts", feedUrl: "https://b.example.com/rss" },
+        { title: "Stuff You Should Know", author: "Podgo", feedUrl: "https://c.example.com/rss" },
+      ]),
+      "Stuff You Should Know — iHeartPodcasts (https://a.example.com/rss); Stuff You Should Know — iHeartPodcasts (https://b.example.com/rss); Stuff You Should Know — Podgo"
+    );
   });
 });

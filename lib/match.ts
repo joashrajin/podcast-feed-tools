@@ -108,3 +108,18 @@ export function candidateLabel(hit: DirectoryHit): string {
   const author = hit.author?.trim();
   return author ? `${name} — ${author}` : name;
 }
+
+/**
+ * The candidates, one label each. Where two would read the same, as when one
+ * publisher has two feeds under one name, each of those gets its feed address.
+ */
+export function candidateList(hits: DirectoryHit[]): string {
+  const labels = hits.map(candidateLabel);
+  return labels
+    .map((label, index) =>
+      labels.indexOf(label) !== labels.lastIndexOf(label) && hits[index].feedUrl
+        ? `${label} (${hits[index].feedUrl})`
+        : label
+    )
+    .join("; ");
+}

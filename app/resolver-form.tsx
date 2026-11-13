@@ -47,7 +47,8 @@ function isSearch(data: unknown): data is { search: DirectorySearch } {
   return Boolean(search && typeof search === "object" && typeof (search as DirectorySearch).title === "string");
 }
 
-function loadingMessage(value: string, matching: boolean): string {
+function loadingMessage(value: string, matching: boolean, checking: boolean): string {
+  if (checking) return "Checking which feed has Pocket Casts' newest episode…";
   if (matching) return "Matching the show name in Apple Podcasts…";
   switch (detectPlatform(value)) {
     case "apple":
@@ -71,6 +72,7 @@ export default function ResolverForm() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [matching, setMatching] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [copied, setCopied] = useState(false);
@@ -88,6 +90,7 @@ export default function ResolverForm() {
     const current = ++requestId.current;
     setLoading(true);
     setMatching(false);
+    setChecking(false);
     setError(null);
     setResult(null);
     setCopied(false);
@@ -124,7 +127,20 @@ export default function ResolverForm() {
         const outcome = await searchFromBrowser(data.search);
         if (current !== requestId.current) return;
         if (outcome.ok) setResult(outcome.result);
-        else setError(outcome.error);
+        else if (outcome.candidates && data.search.pocketCastsUuid) {
+          // Same-named shows. The server can read their feeds, which this
+          // browser can't, and keep the one with Pocket Casts' newest episode.
+          setChecking(true);
+          const picked = await fetch("/api/resolve", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url: link, candidates: outcome.candidates }),
+          });
+          const pickedData = await picked.json().catch(() => ({}));
+          if (current !== requestId.current) return;
+          if (picked.ok && typeof pickedData.feedUrl === "string") setResult(pickedData as ResolveResult);
+          else setError(outcome.error);
+        } else setError(outcome.error);
       } else {
         setResult(data as ResolveResult);
       }
@@ -211,7 +227,7 @@ export default function ResolverForm() {
 
       {loading && (
         <p className="status" role="status">
-          {loadingMessage(url, matching)}
+          {loadingMessage(url, matching, checking)}
         </p>
       )}
 

@@ -159,3 +159,18 @@ describe("lookupFromBrowser", () => {
     }
   });
 });
+
+describe("matchSearchResults with same-named shows", () => {
+  it("returns the candidates, so a caller that can read feeds can choose", () => {
+    const twin = (feedUrl: string, collectionId: number) => ({ collectionName: "Stuff You Should Know", artistName: "iHeartPodcasts", feedUrl, collectionId });
+    const outcome = matchSearchResults(
+      { results: [twin("https://a.example.com/rss", 1), twin("https://b.example.com/rss", 2)] },
+      { title: "Stuff You Should Know", author: "iHeartPodcasts", platform: "pocketcasts", pocketCastsUuid: "12012c20-0423-012e-f9a0-00163e1b201c" },
+      asHttpUrl
+    );
+    assert.equal(outcome.ok, false);
+    if (outcome.ok) return;
+    assert.deepEqual(outcome.candidates?.map((hit) => hit.feedUrl), ["https://a.example.com/rss", "https://b.example.com/rss"]);
+    assert.match(outcome.error, /iHeartPodcasts \(https:\/\/a\.example\.com\/rss\); Stuff You Should Know — iHeartPodcasts \(https:\/\/b\.example\.com\/rss\)/);
+  });
+});
