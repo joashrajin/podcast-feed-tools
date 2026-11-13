@@ -33,7 +33,6 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 | `REPORT_FORM_SECRET` | Signs the report form's timestamp. Server only. See [Issue reports](#issue-reports). |
 | `AKISMET_API_KEY` | Akismet key for the report form. Optional. Server only. |
 | `SITE_URL` | Absolute site URL sent to Akismet as `blog`. Optional. Falls back to `NEXT_PUBLIC_SITE_URL`. |
-| `DBCHECK_TOKEN` | Gates `GET /api/dbcheck`. Optional. Server only. |
 
 ### Icons and share images
 
@@ -111,8 +110,6 @@ sf env set SITE_URL --value-from-stdin
 ```
 
 The space has to be claimed. An unclaimed space cannot reach `rest.akismet.com`.
-
-`GET /api/dbcheck` with header `x-dbcheck-token` set to `DBCHECK_TOKEN` answers `{ "db": true, "select1": true }` when `env.DB` can run `select 1`. Any other caller gets a 404. The body never includes a row, a secret, or an error string.
 
 ### Reading reports
 

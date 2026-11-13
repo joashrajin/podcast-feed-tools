@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { handleDbCheck } from "../lib/dbcheck";
 import { rateLimit } from "../lib/rate-limit";
 import { handleReport, issueReportToken, type ReportDeps, type ReportEnv } from "../lib/report";
 import type { ReportDatabase } from "../lib/spacefast-db";
@@ -301,50 +300,17 @@ describe("issue reports", () => {
     assert.equal(rateLimit(key), false);
   });
 
-  it("answers the database probe only to the token, and only with two booleans", async () => {
-    const token = "dbcheck-token-value";
-    const closed = await handleDbCheck(
-      new Request("http://localhost/api/dbcheck", { headers: { "x-dbcheck-token": token } }),
-      { token: "" }
-    );
-    assert.equal(closed.status, 404);
-    assert.equal(await closed.text(), "");
-
-    const wrong = await handleDbCheck(
-      new Request("http://localhost/api/dbcheck", { headers: { "x-dbcheck-token": "nope-nope-nope-no" } }),
-      { token }
-    );
-    assert.equal(wrong.status, 404);
-
-    const open = await handleDbCheck(
-      new Request("http://localhost/api/dbcheck", { headers: { "x-dbcheck-token": token } }),
-      { token, db: memoryDb().db }
-    );
-    assert.equal(open.status, 200);
-    assert.deepEqual(await open.json(), { db: true, select1: true });
-
-    const absent = await handleDbCheck(
-      new Request("http://localhost/api/dbcheck", { headers: { "x-dbcheck-token": token } }),
-      { token, db: null }
-    );
-    const body = await absent.json();
-    assert.deepEqual(body, { db: false, select1: false });
-    assert.equal(JSON.stringify(body).includes(token), false);
-  });
-
   it("does not mention the secrets in client code", () => {
     const root = join(import.meta.dirname, "..");
     const files = walk(join(root, "app")).filter((file) => !file.includes(`${join("app", "api", "report")}`));
     files.push(join(root, "lib", "report-context.ts"));
     for (const file of files) {
-      if (file.includes(`${join("app", "api", "dbcheck")}`)) continue;
       const text = readFileSync(file, "utf8");
       assert.equal(text.includes("ISSUE_REPORT_TO"), false, file);
       assert.equal(text.includes("RESEND"), false, file);
       assert.equal(text.includes("api.resend.com"), false, file);
       assert.equal(text.includes("AKISMET_API_KEY"), false, file);
       assert.equal(text.includes("REPORT_FORM_SECRET"), false, file);
-      assert.equal(text.includes("DBCHECK_TOKEN"), false, file);
     }
   });
 });

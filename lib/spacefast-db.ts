@@ -29,17 +29,3 @@ export function readSpacefastDatabase(): ReportDatabase | undefined {
   if (!db || typeof db.prepare !== "function") return undefined;
   return db;
 }
-
-export type DbCheck = { db: boolean; select1: boolean };
-
-/** Whether the binding is present and `select 1` returns a row. No error text. */
-export async function probeDatabase(db: ReportDatabase | undefined): Promise<DbCheck> {
-  if (!db) return { db: false, select1: false };
-  try {
-    const row = await db.prepare("select 1 as ok").bind().first<{ ok?: unknown }>();
-    const ok = row?.ok;
-    return { db: true, select1: ok === 1 || ok === "1" };
-  } catch {
-    return { db: true, select1: false };
-  }
-}
