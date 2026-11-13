@@ -198,7 +198,6 @@ export default function ResolverForm() {
               className="chip"
               onClick={() => pickSource(source.hint)}
               aria-pressed={hint === source.hint}
-              aria-label={`Paste a ${source.label} link`}
               style={{ "--dot": source.color } as React.CSSProperties}
             >
               <span className="chip-dot" aria-hidden="true" />
