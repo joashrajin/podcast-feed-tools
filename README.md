@@ -32,6 +32,8 @@ Tests cover link detection, directory matching, Pocket Casts search mapping, fee
 | `NEXT_PUBLIC_SITE_URL` | Public origin, with no path. Used for metadata, `robots.txt`, the sitemap, and the User-Agent. Defaults to `https://podcast.space.fast` in production builds and `http://localhost:3000` otherwise. |
 | `REPORT_FORM_SECRET` | Signs the report form's timestamp. Server only. See [Issue reports](#issue-reports). |
 | `AKISMET_API_KEY` | Akismet key for the report form. Optional. Server only. |
+| `PODCASTINDEX_API_KEY` | [Podcast Index](https://api.podcastindex.org/) API key, for matching Pocket Casts and Spotify shows by name on the server. Optional; needs the secret too. Server only. |
+| `PODCASTINDEX_API_SECRET` | The secret that goes with `PODCASTINDEX_API_KEY`. It signs each request and is never sent. Server only. |
 | `SITE_URL` | Absolute site URL sent to Akismet as `blog`. Optional. Falls back to `NEXT_PUBLIC_SITE_URL`. |
 
 ### Icons and share images
@@ -61,7 +63,7 @@ If the directory returns no show, the page says so and links to [https://pocketc
 
 ## How a link becomes a feed
 
-- **Pocket Casts.** `pca.st` redirects to a show id. The catalog's `url` is the RSS feed for some shows and the website for others, so it is kept only when the start of the response is an RSS channel or an Atom feed. Otherwise the title and author are matched to Apple Podcasts. A conflicting publisher is not accepted. A private show is refused.
+- **Pocket Casts.** `pca.st` redirects to a show id. The catalog's `url` is the RSS feed for some shows and the website for others, so it is kept only when the start of the response is an RSS channel or an Atom feed. Otherwise the title and author are matched to Apple Podcasts (on the server, Podcast Index first; see below). A conflicting publisher is not accepted. A private show is refused.
 - **Apple Podcasts.** The `id` in a show or episode link is the show. The page requests `https://itunes.apple.com/lookup?id=` in the browser, which Apple allows cross-origin, and posts `feedUrl`, title, author, and artwork back. The server accepts that claim only after the same public-URL check it uses when it fetched the lookup itself, and refuses a claim that names a different show. If the browser gets no readable answer, the server does the lookup and retries once on a non-2xx status or a body that isn't JSON. Both attempts share one 8 second deadline, with a short pause before the second. A failure then asks the visitor to try again.
 - **Spotify.** Spotify does not publish RSS. A show page's `og:title` (or, for an episode, the embed's show name) is matched to the Apple Podcasts search API. One exact title is accepted. Several matches, or a conflicting publisher, are refused. No match is reported as unresolved, which is what happens for Spotify-only shows.
 
@@ -69,7 +71,9 @@ If the directory returns no show, the page says so and links to [https://pocketc
 - **SoundCloud.** Every account has `https://feeds.soundcloud.com/users/soundcloud:users:{id}/sounds.rss`. A profile, track, or `on.soundcloud.com` link leads to the profile page, whose `soundcloud://users:{id}` gives the id. The feed is fetched to confirm it. It includes only the tracks the creator adds to RSS, so an empty feed is reported as such.
 - **Blogs and websites.** Any other address. A link that already answers as RSS or Atom is returned. Otherwise the page's `<link rel="alternate">` feeds are read, comment feeds last, and the first that answers becomes the main one. A page that lists none is tried against known patterns (Substack, Medium, Tumblr, Blogger, WordPress.com, Ghost, Reddit, GitHub releases), then common paths such as `/feed`, `/rss.xml`, `/atom.xml`, and `/index.xml`, under the page's own path first. Candidates are fetched at once, so a site costs at most about 15 requests. The code is in `lib/discover.ts`.
 
-Title matching uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own. On the website the browser runs that search, as it does the Apple lookup, because Apple often refuses this host's address. Pocket Casts and Spotify already took that path, so their name match does not depend on the host. Server-side callers, including the MCP tools and `resolveShowUrl`, search from the server and use the same one-retry deadline when Apple's answer can't be read.
+Title matching on the website uses the US Apple Podcasts directory and does not require an API key. The first search result is never used on its own. The browser runs that search, as it does the Apple lookup, because Apple rate-limits the shared address this host's servers leave from. Pocket Casts and Spotify already took that path, so their name match does not depend on the host.
+
+Server-side callers, including the MCP tools and `resolveShowUrl`, have no browser, so `findFeedByName` asks [Podcast Index](https://podcastindex.org/) first when `PODCASTINDEX_API_KEY` and `PODCASTINDEX_API_SECRET` are set. A show whose feed declares a `podcast:guid` that Pocket Casts lists is looked up by that GUID. Otherwise the title is matched with the same rules as the Apple search. Feeds Apple also lists win, and the feed address is then taken from Apple's lookup by id, which Apple still answers, so the result is the feed the website would give. Apple's search runs only when Podcast Index has no such show or isn't set up. When neither directory answers, the MCP tools return Apple's search URL so the assistant can run it from its own connection.
 
 ## Fetching
 
@@ -106,6 +110,8 @@ On Spacefast, set the secrets from the project root. Each command reads the valu
 ```bash
 sf env set REPORT_FORM_SECRET --value-from-stdin
 sf env set AKISMET_API_KEY --value-from-stdin
+sf env set PODCASTINDEX_API_KEY --value-from-stdin
+sf env set PODCASTINDEX_API_SECRET --value-from-stdin
 sf env set SITE_URL --value-from-stdin
 ```
 

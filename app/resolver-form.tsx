@@ -19,6 +19,8 @@ const sourceLabel: Record<MatchSource, string> = {
   "pocketcasts-catalog": "Feed address taken from the Pocket Casts catalog.",
   "itunes-lookup": "Feed address returned by Apple's lookup API.",
   "itunes-search": "Matched by show name in the Apple Podcasts directory.",
+  "podcastindex-guid": "Podcast Index has the feed that carries this show's podcast GUID.",
+  "podcastindex-search": "Matched by show name in Podcast Index.",
   "soundcloud-profile": "SoundCloud's feed for this account.",
   "youtube-channel": "YouTube's feed for this channel. It lists videos, not audio files.",
   "youtube-playlist": "YouTube's feed for this playlist. It lists videos, not audio files.",

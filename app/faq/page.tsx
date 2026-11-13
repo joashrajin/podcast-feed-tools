@@ -63,6 +63,10 @@ const faqs = [
     a: "Apple's directory often refuses this site's shared server address. Your browser asks Apple for the feed behind an Apple Podcasts link, and searches by name for Pocket Casts and Spotify shows, so Apple sees your address. No cookies are sent with that request.",
   },
   {
+    q: "How do AI assistants match a show by name?",
+    a: "They have no browser to ask Apple, so the server asks Podcast Index, the open podcast directory. A show is found by its podcast GUID when it has one, or else by exact title and publisher, and Apple's feed address is used when Apple lists the show. If no directory answers, the assistant is given Apple's search link to open itself.",
+  },
+  {
     q: "Can two podcasts with the same name get mixed up?",
     a: "An exact title is required. A publisher that points at a different show blocks the match, and when several shows still fit, the tool stops and names them.",
   },

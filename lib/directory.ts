@@ -15,6 +15,8 @@ export type DirectorySearch = {
   platform: Platform;
   /** Artwork from the source platform, used when Apple has none. */
   artwork?: string;
+  /** The feed's podcast:guid, when Pocket Casts has it. Lets Podcast Index skip the name match. */
+  podcastGuid?: string;
 };
 
 export type DirectoryOutcome = { ok: true; result: ResolveResult } | { ok: false; error: string };

@@ -1,12 +1,14 @@
 import { formatDuration } from "../feed-stats";
 import { safeFetch, type SafeFetchOptions, type SafeResponse } from "../net";
+import type { PodcastIndexKeys } from "../podcast-index";
 import {
   catalogFeedUrl,
+  findFeedByName,
   identifyShow,
+  NameSearchIncomplete,
   pocketCastsShowId,
   readPocketCastsShow,
   ResolveError,
-  searchItunes,
   type PocketCastsEpisode,
   type PocketCastsShow,
 } from "../resolve";
@@ -17,7 +19,11 @@ import { inspectFeed, ValidateError } from "../validate";
 import { errorResult, textResult, type Tool, type ToolResult } from "./server";
 
 type Fetch = (input: string, options: SafeFetchOptions) => Promise<SafeResponse>;
-export type ToolDeps = { fetch?: Fetch };
+export type ToolDeps = {
+  fetch?: Fetch;
+  /** Podcast Index keys. Left out, they're read from the environment; null turns the index off. */
+  podcastIndex?: PodcastIndexKeys | null;
+};
 
 class ArgError extends Error {}
 
@@ -144,12 +150,23 @@ function feedEpisode(episode: FeedEpisode, duplicateGuids?: Set<string>) {
   };
 }
 
+/**
+ * When no directory would answer this server, the assistant can still run
+ * Apple's search itself: Apple turns away this server's shared address, not
+ * the assistant's.
+ */
+function handOff(err: NameSearchIncomplete): string {
+  const { title, author } = err.search;
+  const publisher = author ? ` and whose artistName matches "${author}"` : "";
+  return `To finish from your own connection, fetch ${err.searchUrl} and take feedUrl from the result whose collectionName is "${title}"${publisher}. Then use that feed URL with check_feed or compare_feed_with_pocket_casts.`;
+}
+
 const normalTitle = (title: string | undefined) =>
   title?.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim() || undefined;
 
 export function tools(deps: ToolDeps = {}): Tool[] {
   const fetch = deps.fetch ?? safeFetch;
-  const resolverDeps = { fetch };
+  const resolverDeps = { fetch, podcastIndex: deps.podcastIndex };
 
   return [
     {
@@ -220,14 +237,10 @@ export function tools(deps: ToolDeps = {}): Tool[] {
           const identified = await identifyShow(link, resolverDeps);
           if ("result" in identified) return textResult(identified.result);
           try {
-            return textResult(await searchItunes(identified.search, resolverDeps));
+            return textResult(await findFeedByName(identified.search, resolverDeps));
           } catch (err) {
-            if (!(err instanceof ResolveError)) throw err;
-            return errorResult(
-              `${err.message} The show is "${identified.search.title}"${
-                identified.search.author ? ` by ${identified.search.author}` : ""
-              }. Matching it to a feed needs Apple's search, which can refuse this server. If the feed URL is known some other way, use it with the feed tools.`
-            );
+            if (!(err instanceof NameSearchIncomplete)) throw err;
+            return errorResult(`${err.message} ${handOff(err)}`);
           }
         }),
     },
@@ -310,7 +323,7 @@ export function tools(deps: ToolDeps = {}): Tool[] {
           show: SHOW_PROPERTY,
           feed_url: {
             type: "string",
-            description: "The show's RSS feed. Optional: when left out it's worked out from Pocket Casts and Apple, which doesn't always succeed.",
+            description: "The show's RSS feed. Optional: when left out it's worked out from Pocket Casts, Podcast Index, and Apple, which doesn't always succeed.",
           },
           limit: { type: "integer", minimum: 1, maximum: 100, default: 20, description: "Most episodes to list on each side." },
           ...LOGIN_PROPERTIES,
@@ -329,17 +342,25 @@ export function tools(deps: ToolDeps = {}): Tool[] {
             feedUrl = await catalogFeedUrl(show, resolverDeps);
             feedSource = "pocket-casts-catalog";
           }
+          let missed: ResolveError | undefined;
           if (!feedUrl && show.title) {
             try {
-              feedUrl = (await searchItunes({ title: show.title, author: show.author, platform: "pocketcasts" }, resolverDeps)).feedUrl;
-              feedSource = "apple-search";
+              const found = await findFeedByName(
+                { title: show.title, author: show.author, platform: "pocketcasts", podcastGuid: show.podcastGuid },
+                resolverDeps
+              );
+              feedUrl = found.feedUrl;
+              feedSource = found.matchedBy === "itunes-search" ? "apple-search" : "podcast-index";
             } catch (err) {
               if (!(err instanceof ResolveError)) throw err;
+              missed = err;
             }
           }
           if (!feedUrl) {
+            const why = missed ? ` ${missed.message}` : "";
+            const next = missed instanceof NameSearchIncomplete ? ` Pass feed_url if you know it. ${handOff(missed)}` : " Pass feed_url.";
             return errorResult(
-              `Couldn't work out the RSS feed for "${show.title ?? uuid}". Pocket Casts lists ${show.website ?? "no address"} for it, which isn't a feed, and Apple's search didn't give one. Pass feed_url.`
+              `Couldn't work out the RSS feed for "${show.title ?? uuid}". Pocket Casts lists ${show.website ?? "no address"} for it, which isn't a feed.${why}${next}`
             );
           }
 

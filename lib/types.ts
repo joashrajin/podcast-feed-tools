@@ -4,6 +4,10 @@ export type MatchSource =
   | "pocketcasts-catalog"
   | "itunes-lookup"
   | "itunes-search"
+  /** Podcast Index has the feed that declares the show's podcast:guid. */
+  | "podcastindex-guid"
+  /** Matched by name in Podcast Index, when Apple's search refuses the server. */
+  | "podcastindex-search"
   | "soundcloud-profile"
   | "youtube-channel"
   | "youtube-playlist"

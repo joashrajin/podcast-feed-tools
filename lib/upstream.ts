@@ -3,14 +3,24 @@
 // answered badly. Server only.
 
 import { assertPublicHttpUrl, FetchError, safeFetch, type SafeFetchOptions, type SafeResponse } from "./net";
+import type { PodcastIndexKeys } from "./podcast-index";
 
 export class ResolveError extends Error {}
+
+/**
+ * A directory gave no answer: it refused, rate-limited, or couldn't be
+ * reached. That says nothing about the show, so another directory may still
+ * be asked.
+ */
+export class DirectoryUnavailable extends ResolveError {}
 
 export type ResolverDeps = {
   fetch?: (input: string, options: SafeFetchOptions) => Promise<SafeResponse>;
   /** Clock for the shared Apple deadline. Tests advance it instead of waiting. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Podcast Index keys. Left out, they're read from the environment; null turns the index off. */
+  podcastIndex?: PodcastIndexKeys | null;
 };
 
 export function fetchWith(deps: ResolverDeps) {

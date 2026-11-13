@@ -83,7 +83,7 @@ const defaults: Route[] = [
 function context(routes: Route[] = defaults, extra: Partial<Context> = {}): Context {
   return {
     info: { name: "podcast-tools", title: "Test", version: "1.0.0", instructions: INSTRUCTIONS },
-    tools: tools({ fetch: stubFetch(...routes).fetch }),
+    tools: tools({ fetch: stubFetch(...routes).fetch, podcastIndex: null }),
     ...extra,
   };
 }
@@ -267,6 +267,13 @@ describe("mcp: tools", () => {
     assert.match(out.content[0].text, /Pass feed_url/);
   });
 
+  it("compare_feed_with_pocket_casts finds the feed through Podcast Index when Apple refuses", async () => {
+    const ctx = context(indexRoutes, { tools: tools({ fetch: stubFetch(...indexRoutes).fetch, podcastIndex: INDEX_KEYS }) });
+    const out = data(await call("compare_feed_with_pocket_casts", { show: UUID }, ctx));
+    assert.equal(out.feedSource, "podcast-index");
+    assert.equal(out.feedUrl, FEED);
+  });
+
   it("compare_feed_with_pocket_casts finds the feed through Apple when it can", async () => {
     const ctx = context([
       ...defaults,
@@ -278,5 +285,56 @@ describe("mcp: tools", () => {
     const out = data(await call("compare_feed_with_pocket_casts", { show: UUID }, ctx));
     assert.equal(out.feedSource, "apple-search");
     assert.equal(out.feedUrl, FEED);
+  });
+});
+
+const INDEX_KEYS = { key: "test-index-key", secret: "test-index-secret" };
+
+const indexRoutes: Route[] = [
+  ...defaults,
+  (url) => (url.startsWith("https://itunes.apple.com/") ? reply(url, 429, "Rate limit has been exceeded", "text/plain") : undefined),
+  (url) =>
+    url.startsWith("https://api.podcastindex.org/api/1.0/search/bytitle")
+      ? reply(url, 200, JSON.stringify({ status: "true", feeds: [{ title: "Example Show", author: "Example Co", url: FEED, itunesId: null, dead: 0 }] }))
+      : undefined,
+];
+
+describe("find_feed_url name matching", () => {
+  const link = `https://pocketcasts.com/podcast/example-show/${UUID}`;
+
+  it("matches a Pocket Casts show in Podcast Index when Apple refuses this server", async () => {
+    const ctx = context(indexRoutes, { tools: tools({ fetch: stubFetch(...indexRoutes).fetch, podcastIndex: INDEX_KEYS }) });
+    const out = data(await call("find_feed_url", { link }, ctx));
+    assert.equal(out.feedUrl, FEED);
+    assert.equal(out.matchedBy, "podcastindex-search");
+    assert.equal(out.platform, "pocketcasts");
+  });
+
+  it("hands the Apple search to the assistant when no directory answers", async () => {
+    const routes: Route[] = [
+      ...defaults,
+      (url) => (url.startsWith("https://itunes.apple.com/") ? reply(url, 429, "Rate limit has been exceeded", "text/plain") : undefined),
+      (url) => (url.startsWith("https://api.podcastindex.org/") ? reply(url, 503, "busy", "text/plain") : undefined),
+    ];
+    const ctx = context(routes, { tools: tools({ fetch: stubFetch(...routes).fetch, podcastIndex: INDEX_KEYS }) });
+    const out = await call("find_feed_url", { link }, ctx);
+    assert.equal(out.isError, true);
+    const message = out.content[0].text;
+    assert.match(message, /Neither Podcast Index nor Apple's directory answered this server/);
+    assert.match(message, /fetch https:\/\/itunes\.apple\.com\/search\?media=podcast&entity=podcast&limit=50&term=Example\+Show/);
+    assert.match(message, /collectionName is "Example Show" and whose artistName matches "Example Co"/);
+    assert.equal(/try again/i.test(message), false);
+    assert.equal(message.includes(INDEX_KEYS.secret), false);
+  });
+
+  it("compare_feed_with_pocket_casts hands off the same way", async () => {
+    const routes: Route[] = [
+      ...defaults,
+      (url) => (url.startsWith("https://itunes.apple.com/") ? reply(url, 429, "Rate limit has been exceeded", "text/plain") : undefined),
+    ];
+    const out = await call("compare_feed_with_pocket_casts", { show: UUID }, context(routes));
+    assert.equal(out.isError, true);
+    assert.match(out.content[0].text, /Apple's directory turned down the name search from this server/);
+    assert.match(out.content[0].text, /Pass feed_url if you know it\. To finish from your own connection, fetch https:\/\/itunes\.apple\.com\/search/);
   });
 });

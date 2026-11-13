@@ -1,7 +1,7 @@
 import { USER_AGENT } from "./site";
 import type { MatchSource, Platform, ResolveResult } from "./types";
 import { appleShowId, parseShowLink, pocketCastsUuid, spotifyRef } from "./platforms";
-import type { DirectoryHit } from "./match";
+import { candidateLabel, type DirectoryHit } from "./match";
 import {
   APPLE_NO_FEED,
   APPLE_TRY_AGAIN,
@@ -19,7 +19,9 @@ import {
   spotifyPublisher,
 } from "./html";
 import { asHttpsUrl, FetchError, type SafeResponse } from "./net";
+import { indexByGuid, indexByTitle, keysFor } from "./podcast-index";
 import {
+  DirectoryUnavailable,
   fetchWith,
   logUpstream,
   publicFeedUrl,
@@ -30,7 +32,7 @@ import {
 } from "./upstream";
 import { discoverWebsite, resolveSoundCloud, resolveYouTube } from "./discover";
 
-export { logUpstream, ResolveError } from "./upstream";
+export { DirectoryUnavailable, logUpstream, ResolveError } from "./upstream";
 export type { ResolverDeps } from "./upstream";
 
 export type { ResolveResult } from "./types";
@@ -107,7 +109,7 @@ async function readApple(call: AppleCall, deps: ResolverDeps): Promise<unknown> 
   const wait = deps.sleep ?? delay;
   const started = now();
   const remaining = () => APPLE_DEADLINE_MS - (now() - started);
-  let failure = new ResolveError(APPLE_TRY_AGAIN);
+  let failure: ResolveError = new DirectoryUnavailable(APPLE_TRY_AGAIN);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
@@ -128,7 +130,7 @@ async function readApple(call: AppleCall, deps: ResolverDeps): Promise<unknown> 
         maxUncompressedBytes: call.maxUncompressedBytes,
       });
     } catch (err) {
-      throw upstreamError(err, call.unreachable, call.stage, call.endpoint);
+      throw new DirectoryUnavailable(upstreamError(err, call.unreachable, call.stage, call.endpoint).message);
     }
 
     if (response.status >= 200 && response.status < 300) {
@@ -140,7 +142,7 @@ async function readApple(call: AppleCall, deps: ResolverDeps): Promise<unknown> 
           attempt: attempt + 1,
           ...responseDetail(response),
         });
-        failure = new ResolveError(APPLE_TRY_AGAIN);
+        failure = new DirectoryUnavailable(APPLE_TRY_AGAIN);
         continue;
       }
     }
@@ -149,7 +151,7 @@ async function readApple(call: AppleCall, deps: ResolverDeps): Promise<unknown> 
       attempt: attempt + 1,
       ...responseDetail(response),
     });
-    failure = new ResolveError(APPLE_TRY_AGAIN);
+    failure = new DirectoryUnavailable(APPLE_TRY_AGAIN);
   }
   throw failure;
 }
@@ -326,6 +328,7 @@ type Catalog = {
   title?: string;
   author?: string;
   feedCandidate?: string;
+  podcastGuid?: string;
   isPrivate: boolean;
 };
 
@@ -347,6 +350,8 @@ export type PocketCastsShow = {
   author?: string;
   /** The catalog's `url`: usually the show's website, sometimes its feed. */
   website?: string;
+  /** The feed's podcast:guid, when it declares one. */
+  podcastGuid?: string;
   isPrivate: boolean;
   showType?: string;
   categories: string[];
@@ -442,6 +447,7 @@ export async function readPocketCastsShow(uuid: string, deps: ResolverDeps = {})
     title: str(podcast.title),
     author: str(podcast.author),
     website: str(podcast.url),
+    podcastGuid: str(podcast.guid),
     isPrivate: podcast.is_private === true || podcast.isPrivate === true,
     showType: str(podcast.show_type),
     categories: category ? category.split(/\n+/).map((part) => part.trim()).filter(Boolean) : [],
@@ -456,7 +462,13 @@ export async function readPocketCastsShow(uuid: string, deps: ResolverDeps = {})
 
 async function readCatalog(uuid: string, deps: ResolverDeps): Promise<Catalog> {
   const show = await readPocketCastsShow(uuid, deps);
-  return { title: show.title, author: show.author, feedCandidate: show.website, isPrivate: show.isPrivate };
+  return {
+    title: show.title,
+    author: show.author,
+    feedCandidate: show.website,
+    podcastGuid: show.podcastGuid,
+    isPrivate: show.isPrivate,
+  };
 }
 
 async function confirmFeed(candidate: string, deps: ResolverDeps): Promise<string | undefined> {
@@ -573,7 +585,15 @@ async function identifyPocketCasts(inputUrl: URL, deps: ResolverDeps): Promise<I
   if (!catalog.title) {
     throw new ResolveError("Pocket Casts didn't include a title or a feed for that show.");
   }
-  return { search: { title: catalog.title, author: catalog.author, platform: "pocketcasts", artwork } };
+  return {
+    search: {
+      title: catalog.title,
+      author: catalog.author,
+      platform: "pocketcasts",
+      artwork,
+      podcastGuid: catalog.podcastGuid,
+    },
+  };
 }
 
 /** Find the show or feed. Stops before the Apple name search, which the caller runs where it can. */
@@ -596,9 +616,117 @@ export async function identifyShow(input: string, deps: ResolverDeps = {}): Prom
   }
 }
 
-/** Find the show and its feed, running the Apple name search on the server. */
+/**
+ * Neither directory could be asked: the show is known by name, but nothing
+ * matched it to a feed. The caller can run Apple's search from an address
+ * Apple doesn't turn away.
+ */
+export class NameSearchIncomplete extends ResolveError {
+  constructor(
+    message: string,
+    readonly search: DirectorySearch
+  ) {
+    super(message);
+  }
+
+  /** Apple's search for the show, for a client to run from its own address. */
+  get searchUrl(): string {
+    return itunesSearchUrl(this.search.title);
+  }
+}
+
+/** Apple's own feed address for an Apple id, or undefined when Apple doesn't answer. */
+async function appleFeedFor(itunesId: number, deps: ResolverDeps): Promise<string | undefined> {
+  try {
+    const data = await readApple(
+      {
+        endpoint: itunesLookupUrl(String(itunesId)),
+        stage: "apple-lookup",
+        maxBytes: 1_000_000,
+        unreachable: "Apple's directory didn't respond.",
+      },
+      deps
+    );
+    return publicFeedUrl(itunesHits(data).find((hit) => hit.feedUrl)?.feedUrl);
+  } catch (err) {
+    if (err instanceof ResolveError) return undefined;
+    throw err;
+  }
+}
+
+function indexResult(hit: DirectoryHit, feedUrl: string, matchedBy: MatchSource, search: DirectorySearch): ResolveResult {
+  return {
+    feedUrl,
+    title: hit.title ?? search.title,
+    author: hit.author ?? search.author,
+    artwork: asHttpsUrl(hit.artwork) ?? search.artwork,
+    itunesId: hit.itunesId,
+    platform: search.platform,
+    matchedBy,
+  };
+}
+
+function byLine(search: DirectorySearch): string {
+  return search.author ? `"${search.title}" by ${search.author}` : `"${search.title}"`;
+}
+
+/**
+ * Match a show known only by name on the server. Podcast Index answers first:
+ * by the feed's podcast GUID when Pocket Casts has one, then by title. A title
+ * match that Apple also lists takes Apple's feed address, so this agrees with
+ * the website, whose browser asks Apple. Apple's search, which usually turns
+ * this server away, is tried only when Podcast Index has no such show or
+ * isn't set up.
+ */
+export async function findFeedByName(search: DirectorySearch, deps: ResolverDeps = {}): Promise<ResolveResult> {
+  const keys = keysFor(deps);
+  let index: "off" | "none" | "unavailable" = "off";
+  if (keys) {
+    try {
+      const byGuid = search.podcastGuid ? await indexByGuid(search.podcastGuid, keys, deps) : undefined;
+      if (byGuid?.feedUrl) return indexResult(byGuid, byGuid.feedUrl, "podcastindex-guid", search);
+
+      const outcome = await indexByTitle(search, keys, deps);
+      if (outcome.status === "match") {
+        const { hit } = outcome;
+        const appleFeed = hit.itunesId ? await appleFeedFor(hit.itunesId, deps) : undefined;
+        const feedUrl = appleFeed ?? hit.feedUrl;
+        if (feedUrl) return indexResult(hit, feedUrl, "podcastindex-search", search);
+      }
+      if (outcome.status === "conflict") {
+        throw new ResolveError(
+          `The publisher doesn't match. Podcast Index has "${candidateLabel(outcome.hit)}", not ${byLine(search)}. Use the show's Apple Podcasts link or feed URL if that is the one you want.`
+        );
+      }
+      if (outcome.status === "ambiguous") {
+        throw new ResolveError(
+          `Several shows are named "${search.title}": ${outcome.candidates.map(candidateLabel).join("; ")}. Use the Apple Podcasts link or the feed URL for the one you want.`
+        );
+      }
+      index = "none";
+    } catch (err) {
+      if (!(err instanceof DirectoryUnavailable)) throw err;
+      index = "unavailable";
+    }
+  }
+
+  try {
+    return await searchItunes(search, deps);
+  } catch (err) {
+    if (!(err instanceof DirectoryUnavailable)) throw err;
+    const spotify = search.platform === "spotify" ? " Spotify doesn't publish RSS, so it may be a Spotify exclusive." : "";
+    const message = {
+      off: `Apple's directory turned down the name search from this server, so ${byLine(search)} couldn't be matched to a feed.`,
+      none: `Podcast Index has no show named ${byLine(search)}, and Apple's directory turned down the name search from this server.${spotify}`,
+      unavailable: `Neither Podcast Index nor Apple's directory answered this server, so ${byLine(search)} couldn't be matched to a feed.`,
+    }[index];
+    throw new NameSearchIncomplete(message, search);
+  }
+}
+
+/** Find the show and its feed, matching a name on the server. */
 export async function resolveShowUrl(input: string, deps: ResolverDeps = {}): Promise<ResolveResult> {
   const identified = await identifyShow(input, deps);
   if ("result" in identified) return identified.result;
-  return searchItunes(identified.search, deps);
+  return findFeedByName(identified.search, deps);
 }
